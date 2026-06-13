@@ -1,0 +1,30 @@
+# Source — only ship the build output
+src/
+scripts/
+spec/
+k8s/
+tmp/
+
+# Config
+tsconfig.json
+vitest.config.ts
+cloudbuild.yaml
+docker-compose.yml
+Dockerfile
+.dockerignore
+fly.toml
+railway.toml
+render.yaml
+Procfile
+
+# Tests
+**/*.test.ts
+coverage/
+
+# Env
+.env*
+
+# Misc
+.github/
+.claude/
+.DS_Store

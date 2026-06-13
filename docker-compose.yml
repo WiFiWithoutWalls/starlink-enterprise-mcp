@@ -1,0 +1,51 @@
+services:
+  starlink-enterprise-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: starlink-enterprise-mcp:latest
+    container_name: starlink-enterprise-mcp
+    ports:
+      - "${MCP_PORT:-3000}:3000"
+    environment:
+      # Starlink API endpoints (defaults are correct for production)
+      - STARLINK_API_URL=${STARLINK_API_URL:-https://web-api.starlink.com}
+      - STARLINK_TOKEN_URL=${STARLINK_TOKEN_URL:-https://www.starlink.com/api/auth/connect/token}
+
+      # Transport configuration
+      - MCP_TRANSPORT=http
+      - MCP_PORT=3000
+      # Public base URL for OAuth metadata discovery (set to your external URL)
+      - MCP_BASE_URL=${MCP_BASE_URL:-http://localhost:3000}
+      # Signs login-state cookies — MUST be stable across restarts (32+ chars)
+      - MCP_SESSION_SECRET=${MCP_SESSION_SECRET}
+
+      # Optional: Server Configuration
+      - DEBUG=${DEBUG:-false}
+      - NODE_ENV=production
+
+    # In HTTP mode each user supplies their own Starlink Service Account on the
+    # login page; tokens are persisted here across restarts.
+    volumes:
+      - token-data:/home/nodejs/.starlink-mcp
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  token-data:

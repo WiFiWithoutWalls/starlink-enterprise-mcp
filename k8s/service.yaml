@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: starlink-mcp
+  namespace: starlink-mcp
+spec:
+  selector:
+    app: starlink-mcp
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  type: ClusterIP

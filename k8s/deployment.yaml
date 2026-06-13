@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: starlink-mcp
+  namespace: starlink-mcp
+  labels:
+    app: starlink-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: starlink-mcp
+  template:
+    metadata:
+      labels:
+        app: starlink-mcp
+    spec:
+      containers:
+        - name: starlink-mcp
+          image: starlink-enterprise-mcp:latest
+          ports:
+            - containerPort: 3000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: starlink-mcp
+            - secretRef:
+                name: starlink-mcp
+          volumeMounts:
+            - name: token-data
+              mountPath: /home/nodejs/.starlink-mcp
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            readOnlyRootFilesystem: true
+      volumes:
+        - name: token-data
+          persistentVolumeClaim:
+            claimName: starlink-mcp-tokens

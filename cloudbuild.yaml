@@ -1,0 +1,77 @@
+# Cloud Build pipeline for the Starlink Enterprise MCP server.
+#
+# Triggered by pushes to `main`. Runs the test suite, builds the image, pushes
+# it to Artifact Registry, and deploys to Cloud Run.
+#
+# IMPORTANT — env vars are managed OUTSIDE this file. The deploy step does NOT
+# pass --set-env-vars, so Cloud Run inherits all env vars from the previous
+# active revision (MCP_SESSION_SECRET, MCP_PERSISTENCE=firestore,
+# MCP_BASE_URL, MCP_LOGIN_HEADER, MCP_ICON_URL, MCP_DISABLED_TOOLS, etc.).
+# To change a production env var, update the service directly:
+#   gcloud run services update starlink-enterprise-mcp \
+#     --region=us-central1 --update-env-vars="KEY=value"
+# Adding --set-env-vars here would wipe every existing env var on the next
+# deploy, including MCP_SESSION_SECRET (which would invalidate all logins).
+
+steps:
+  - id: test
+    name: 'node:18-alpine'
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        set -e
+        apk add --no-cache git
+        npm ci
+        npm test
+
+  - id: build
+    name: 'gcr.io/cloud-builders/docker'
+    waitFor: ['test']
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/starlink-enterprise-mcp:$COMMIT_SHA'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/starlink-enterprise-mcp:latest'
+      - '.'
+
+  - id: push
+    name: 'gcr.io/cloud-builders/docker'
+    waitFor: ['build']
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/starlink-enterprise-mcp'
+
+  - id: deploy
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    waitFor: ['push']
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'starlink-enterprise-mcp'
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/starlink-enterprise-mcp:$COMMIT_SHA'
+      - '--region=${_REGION}'
+      - '--platform=managed'
+      - '--port=3000'
+      - '--allow-unauthenticated'
+      - '--min-instances=1'
+      - '--max-instances=10'
+      - '--memory=512Mi'
+      - '--cpu=1'
+      - '--timeout=3600'
+      - '--session-affinity'
+
+substitutions:
+  _REGION: us-central1
+  _REPO: starlink-enterprise-mcp
+
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/starlink-enterprise-mcp:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/starlink-enterprise-mcp:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8

@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: starlink-enterprise-mcp
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: MCP_BASE_URL
+        sync: false
+      - key: MCP_SESSION_SECRET
+        sync: false
+      - key: STARLINK_API_URL
+        value: https://web-api.starlink.com
+      - key: STARLINK_TOKEN_URL
+        value: https://www.starlink.com/api/auth/connect/token
+      - key: MCP_TRANSPORT
+        value: http
+      - key: MCP_PORT
+        value: "3000"
+      - key: NODE_ENV
+        value: production
+    disk:
+      name: token-data
+      mountPath: /home/nodejs/.starlink-mcp
+      sizeGB: 1
