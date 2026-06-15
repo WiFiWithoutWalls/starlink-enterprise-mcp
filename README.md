@@ -99,6 +99,23 @@ their Service Account Client ID + Secret, and the bearer flows back to the AI
 automatically. **No upstream operator credentials are needed in HTTP mode** —
 each user brings their own service account.
 
+### Single-account mode (skip the login page)
+
+If you set `STARLINK_CLIENT_ID` + `STARLINK_CLIENT_SECRET` on the **server**, the
+`/authorize` step auto-logs-in with those and the credential-entry page is never
+shown — every user who connects shares that one Starlink account. Leave them
+unset for the multi-tenant login-page behavior above.
+
+```bash
+export STARLINK_CLIENT_ID=<service-account-id>
+export STARLINK_CLIENT_SECRET=<service-account-secret>
+```
+
+> Trade-off: in single-account mode the endpoint is only as private as its URL —
+> DCR registration is open, so anyone who can reach `/mcp` and complete the
+> (credential-free) OAuth flow uses that shared account. Put it behind access
+> control, or accept that the URL is the secret.
+
 ## ☁️ Cloud Run deployment
 
 Ships with a Cloud Run-friendly `Dockerfile` and `cloudbuild.yaml`.

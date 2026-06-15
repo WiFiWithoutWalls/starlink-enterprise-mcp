@@ -246,6 +246,14 @@ export interface StarlinkAuthProviderOptions {
   tokenLifetimeSec?: number;
   /** Path to the file-backed token store (default ~/.starlink-mcp/http-tokens.json). */
   tokenStorePath?: string;
+  /**
+   * Operator-configured service account. When BOTH are set, the authorize
+   * flow skips the credential-entry page and auto-logs-in with these — a
+   * single shared Starlink account for everyone who connects. When unset,
+   * each user enters their own credentials on the login page (multi-tenant).
+   */
+  defaultClientId?: string;
+  defaultClientSecret?: string;
 }
 
 export class StarlinkAuthProvider implements OAuthServerProvider {
@@ -255,6 +263,8 @@ export class StarlinkAuthProvider implements OAuthServerProvider {
 
   private tokenUrl: string;
   private tokenLifetimeSec: number;
+  private defaultClientId?: string;
+  private defaultClientSecret?: string;
 
   /** Re-mint the upstream Starlink token when within this many ms of expiry. */
   private static readonly STARLINK_REFRESH_SKEW_MS = 60_000;
@@ -262,6 +272,8 @@ export class StarlinkAuthProvider implements OAuthServerProvider {
   constructor(options: StarlinkAuthProviderOptions) {
     this.tokenUrl = options.tokenUrl;
     this.tokenLifetimeSec = options.tokenLifetimeSec ?? 3600;
+    this.defaultClientId = options.defaultClientId;
+    this.defaultClientSecret = options.defaultClientSecret;
 
     const useFirestore =
       process.env.MCP_PERSISTENCE === 'firestore' ||
@@ -304,6 +316,37 @@ export class StarlinkAuthProvider implements OAuthServerProvider {
       resource: params.resource,
       createdAt: Date.now(),
     };
+
+    // Single-account mode: when the operator has configured a service account,
+    // skip the credential-entry page and auto-log-in with it. The user never
+    // sees a login form — the connector just works against the shared account.
+    if (this.defaultClientId && this.defaultClientSecret) {
+      try {
+        const tokens = await mintClientCredentialsToken({
+          tokenUrl: this.tokenUrl,
+          clientId: this.defaultClientId,
+          clientSecret: this.defaultClientSecret,
+        });
+        await this.completeLogin(
+          pending,
+          {
+            accessToken: tokens.access_token,
+            expiresAt: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : undefined,
+            clientId: this.defaultClientId,
+            clientSecret: this.defaultClientSecret,
+          },
+          res,
+        );
+        return;
+      } catch (err: any) {
+        // Misconfigured operator credentials — fall through to the login form
+        // so a user can still enter their own rather than hard-failing.
+        logger.error('Operator default service account failed; falling back to login form', {
+          error: err.message,
+        });
+      }
+    }
+
     const cookie = signValue(pending, 15 * 60); // 15 min TTL
     setSignedCookie(res, PENDING_AUTH_COOKIE, cookie, 15 * 60);
 

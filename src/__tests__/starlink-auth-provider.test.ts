@@ -122,6 +122,51 @@ describe('StarlinkAuthProvider login', () => {
   });
 });
 
+describe('StarlinkAuthProvider single-account mode (operator default creds)', () => {
+  it('skips the login page and auto-logs-in with operator credentials', async () => {
+    const sa = new StarlinkAuthProvider({
+      tokenUrl: TOKEN_URL,
+      tokenStorePath: storePath,
+      defaultClientId: 'operator-id',
+      defaultClientSecret: 'operator-secret',
+    });
+
+    vi.mocked(axios.post).mockResolvedValue({ data: { access_token: 'sl-shared', expires_in: 900 } } as any);
+
+    const res = fakeRes();
+    await sa.authorize(CLIENT, PARAMS, res);
+
+    // No login form rendered — straight to a redirect with an auth code.
+    expect(res.body).toBe('');
+    expect(res.redirectedTo).toBeDefined();
+    const code = new URL(res.redirectedTo!).searchParams.get('code')!;
+
+    // It used the operator credentials for the grant.
+    const [, body] = vi.mocked(axios.post).mock.calls[0];
+    expect(String(body)).toContain('client_id=operator-id');
+
+    const tokens = await sa.exchangeAuthorizationCode(CLIENT, code);
+    const info = await sa.verifyAccessToken(tokens.access_token);
+    expect((info.extra as any).starlinkAccessToken).toBe('sl-shared');
+  });
+
+  it('falls back to the login form if operator credentials are bad', async () => {
+    const sa = new StarlinkAuthProvider({
+      tokenUrl: TOKEN_URL,
+      tokenStorePath: storePath,
+      defaultClientId: 'bad',
+      defaultClientSecret: 'bad',
+    });
+    vi.mocked(axios.post).mockRejectedValue({ response: { status: 401, data: { error: 'invalid_client' } }, message: '401' });
+
+    const res = fakeRes();
+    await sa.authorize(CLIENT, PARAMS, res);
+    // No redirect; the login form is shown instead of hard-failing.
+    expect(res.redirectedTo).toBeUndefined();
+    expect(res.body).toContain('Client ID');
+  });
+});
+
 describe('StarlinkAuthProvider token exchange + verify', () => {
   it('exchanges an auth code for MCP tokens and verifies them', async () => {
     const code = await loginAndGetCode();

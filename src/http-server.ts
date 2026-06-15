@@ -38,12 +38,16 @@ interface AuthenticatedRequest extends IncomingMessage {
  */
 export function createApp(): { app: express.Express; authProvider: StarlinkAuthProvider; baseUrl: URL; mcpUrl: URL } {
   const config = loadConfig();
-  const port = parseInt(process.env.MCP_PORT || '3000', 10);
+  const port = parseInt(process.env.PORT || process.env.MCP_PORT || '3000', 10);
   const baseUrl = new URL(process.env.MCP_BASE_URL || `http://localhost:${port}`);
   const mcpUrl = new URL('/mcp', baseUrl);
 
   const authProvider = new StarlinkAuthProvider({
     tokenUrl: config.starlink.tokenUrl,
+    // When the operator sets STARLINK_CLIENT_ID/SECRET, run in single-account
+    // mode: the login page is skipped and everyone shares this service account.
+    defaultClientId: config.starlink.clientId,
+    defaultClientSecret: config.starlink.clientSecret,
   });
 
   const { app } = wireApp(config, authProvider, baseUrl, mcpUrl);
@@ -53,7 +57,7 @@ export function createApp(): { app: express.Express; authProvider: StarlinkAuthP
 export async function startHttpServer(): Promise<void> {
   const { app, baseUrl, mcpUrl } = createApp();
   const config = loadConfig();
-  const port = parseInt(process.env.MCP_PORT || '3000', 10);
+  const port = parseInt(process.env.PORT || process.env.MCP_PORT || '3000', 10);
   const host = process.env.MCP_HOST || '0.0.0.0';
 
   app.listen(port, host, () => {
