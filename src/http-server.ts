@@ -48,6 +48,10 @@ export function createApp(): { app: express.Express; authProvider: StarlinkAuthP
     // mode: the login page is skipped and everyone shares this service account.
     defaultClientId: config.starlink.clientId,
     defaultClientSecret: config.starlink.clientSecret,
+    // Pass-through mode: the MCP client supplies the Starlink service-account
+    // credentials as its OAuth client_id + client_secret (configured in Claude),
+    // and the server validates/forwards them. No login page, no server creds.
+    passthrough: process.env.MCP_AUTH_MODE === 'passthrough',
   });
 
   const { app } = wireApp(config, authProvider, baseUrl, mcpUrl);
@@ -158,6 +162,30 @@ function wireApp(
       res.status(404).end();
     }
   });
+
+  // Pass-through capture middlewares — must run BEFORE the OAuth router.
+  // In pass-through mode the Starlink credentials ride in as the OAuth
+  // client_id/secret, which the SDK's handlers don't forward to the provider:
+  //   • /authorize: record the presented redirect_uri so the synthesized
+  //     dynamic client passes the SDK's redirect check.
+  //   • /token: stash the presented client_secret (keyed by auth code) so the
+  //     provider can validate it against Starlink during the code exchange.
+  if (process.env.MCP_AUTH_MODE === 'passthrough') {
+    app.use('/authorize', (req, _res, next) => {
+      const src = (req.method === 'POST' ? (req as any).body : req.query) || {};
+      if (src.client_id) {
+        authProvider.rememberClient(String(src.client_id), src.redirect_uri ? String(src.redirect_uri) : undefined);
+      }
+      next();
+    });
+    app.post('/token', (req, _res, next) => {
+      const body = (req as any).body || {};
+      if (body.code && body.client_secret) {
+        authProvider.captureTokenSecret(String(body.code), String(body.client_secret));
+      }
+      next();
+    });
+  }
 
   // OAuth endpoints — discovery, authorize, token, register, revoke
   app.use(mcpAuthRouter({

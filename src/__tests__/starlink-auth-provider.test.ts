@@ -167,6 +167,54 @@ describe('StarlinkAuthProvider single-account mode (operator default creds)', ()
   });
 });
 
+describe('StarlinkAuthProvider pass-through mode', () => {
+  function ptProvider() {
+    return new StarlinkAuthProvider({ tokenUrl: TOKEN_URL, tokenStorePath: storePath, passthrough: true });
+  }
+  // In pass-through the OAuth client_id IS the Starlink service-account id.
+  const saClient = { client_id: 'sa-client-id' } as any;
+
+  it('issues a code with no login page, then validates the secret against Starlink at /token', async () => {
+    const sa = ptProvider();
+    sa.rememberClient('sa-client-id', PARAMS.redirectUri); // mimics the /authorize middleware
+
+    const res = fakeRes();
+    await sa.authorize(saClient, PARAMS, res);
+    expect(res.body).toBe(''); // no credential form
+    expect(res.redirectedTo).toBeDefined();
+    const code = new URL(res.redirectedTo!).searchParams.get('code')!;
+
+    sa.captureTokenSecret(code, 'sa-secret'); // mimics the /token middleware
+    vi.mocked(axios.post).mockResolvedValue({ data: { access_token: 'sl-pt', expires_in: 900 } } as any);
+
+    const tokens = await sa.exchangeAuthorizationCode(saClient, code);
+    const [, body] = vi.mocked(axios.post).mock.calls[0];
+    expect(String(body)).toContain('client_id=sa-client-id');
+    expect(String(body)).toContain('client_secret=sa-secret');
+
+    const info = await sa.verifyAccessToken(tokens.access_token);
+    expect((info.extra as any).starlinkAccessToken).toBe('sl-pt');
+  });
+
+  it('rejects bad service-account credentials at the code exchange', async () => {
+    const sa = ptProvider();
+    const res = fakeRes();
+    await sa.authorize(saClient, PARAMS, res);
+    const code = new URL(res.redirectedTo!).searchParams.get('code')!;
+    sa.captureTokenSecret(code, 'bad-secret');
+    vi.mocked(axios.post).mockRejectedValue({ response: { status: 401, data: { error: 'invalid_client' } }, message: '401' });
+    await expect(sa.exchangeAuthorizationCode(saClient, code)).rejects.toThrow(/Invalid Starlink service account/);
+  });
+
+  it('requires a client_secret to have been presented', async () => {
+    const sa = ptProvider();
+    const res = fakeRes();
+    await sa.authorize(saClient, PARAMS, res);
+    const code = new URL(res.redirectedTo!).searchParams.get('code')!;
+    await expect(sa.exchangeAuthorizationCode(saClient, code)).rejects.toThrow(/client_secret is required/);
+  });
+});
+
 describe('StarlinkAuthProvider token exchange + verify', () => {
   it('exchanges an auth code for MCP tokens and verifies them', async () => {
     const code = await loginAndGetCode();

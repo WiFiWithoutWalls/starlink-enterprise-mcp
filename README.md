@@ -99,6 +99,25 @@ their Service Account Client ID + Secret, and the bearer flows back to the AI
 automatically. **No upstream operator credentials are needed in HTTP mode** —
 each user brings their own service account.
 
+### Pass-through mode (credentials configured in the MCP client)
+
+Set `MCP_AUTH_MODE=passthrough` and the connector supplies the Starlink Service
+Account as its **OAuth client_id + client_secret** (configured in Claude/ChatGPT,
+not on a login page). The server treats any presented `client_id` as a dynamic
+client, then at the `/token` exchange validates the `client_secret` against
+Starlink's `client_credentials` grant — a successful grant *is* the
+authentication. The credentials are then bound to that session and re-minted as
+usual. No login page, no server-side credentials, fully multi-tenant.
+
+```bash
+export MCP_AUTH_MODE=passthrough
+```
+
+In the client's connector setup, point it at `https://…/mcp` and enter your
+Starlink Service Account **Client ID** and **Client Secret** as the OAuth client
+credentials. Requirements: the client must use the authorization-code flow with
+PKCE and send the `client_secret` at the token endpoint (`client_secret_post`).
+
 ### Single-account mode (skip the login page)
 
 If you set `STARLINK_CLIENT_ID` + `STARLINK_CLIENT_SECRET` on the **server**, the

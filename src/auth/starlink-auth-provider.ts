@@ -27,7 +27,7 @@ import type {
   OAuthTokens,
   OAuthTokenRevocationRequest,
 } from '@modelcontextprotocol/sdk/shared/auth.js';
-import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import { InvalidTokenError, InvalidClientError, InvalidGrantError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import { TokenStore } from './token-store.js';
 import type { StoredToken, TokenStoreLike } from './token-store.js';
 import { FirestoreTokenStore } from './firestore-token-store.js';
@@ -167,6 +167,55 @@ class InMemoryClientsStore implements OAuthRegisteredClientsStore {
 }
 
 // ---------------------------------------------------------------------------
+// Pass-through clients store
+//
+// In pass-through mode the MCP client (Claude) presents the Starlink
+// service-account credentials AS its OAuth client_id + client_secret — there is
+// no DCR and no login page. We synthesize a *public* client for any presented
+// client_id (so the SDK's clientAuth doesn't compare a stored secret) and
+// accumulate the redirect_uris seen at /authorize so the SDK's redirect check
+// passes. The presented secret is validated against Starlink at /token, not here.
+// ---------------------------------------------------------------------------
+
+class DynamicClientsStore implements OAuthRegisteredClientsStore {
+  private clients = new Map<string, OAuthClientInformationFull>();
+
+  private synth(clientId: string, redirectUris: string[]): OAuthClientInformationFull {
+    return {
+      client_id: clientId,
+      redirect_uris: redirectUris,
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+    } as OAuthClientInformationFull;
+  }
+
+  getClient(clientId: string): OAuthClientInformationFull {
+    return this.clients.get(clientId) ?? this.synth(clientId, []);
+  }
+
+  /** Record (and accumulate) a redirect_uri seen for a client at /authorize. */
+  remember(clientId: string, redirectUri?: string): void {
+    const existing = this.clients.get(clientId);
+    const uris = new Set(existing?.redirect_uris ?? []);
+    if (redirectUri) uris.add(redirectUri);
+    this.clients.set(clientId, this.synth(clientId, [...uris]));
+  }
+
+  registerClient(
+    client: Omit<OAuthClientInformationFull, 'client_id' | 'client_id_issued_at'>,
+  ): OAuthClientInformationFull {
+    const full = {
+      ...client,
+      client_id: randomUUID(),
+      client_id_issued_at: Math.floor(Date.now() / 1000),
+    } as OAuthClientInformationFull;
+    this.clients.set(full.client_id, full);
+    return full;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Login page HTML
 // ---------------------------------------------------------------------------
 
@@ -254,17 +303,26 @@ export interface StarlinkAuthProviderOptions {
    */
   defaultClientId?: string;
   defaultClientSecret?: string;
+  /**
+   * Pass-through mode: the MCP client presents the Starlink service-account
+   * credentials as its OAuth client_id + client_secret. No DCR, no login page;
+   * the secret is validated against Starlink at /token. See DynamicClientsStore.
+   */
+  passthrough?: boolean;
 }
 
 export class StarlinkAuthProvider implements OAuthServerProvider {
   private _clientsStore: OAuthRegisteredClientsStore;
-  private authCodes = new Map<string, { pending: PendingAuthorization; session: StarlinkSession }>();
+  private authCodes = new Map<string, { pending: PendingAuthorization; session?: StarlinkSession; passthrough?: boolean }>();
+  /** Pass-through: client_secret presented at /token, keyed by auth code. */
+  private pendingTokenSecrets = new Map<string, string>();
   private tokenStore: TokenStoreLike;
 
   private tokenUrl: string;
   private tokenLifetimeSec: number;
   private defaultClientId?: string;
   private defaultClientSecret?: string;
+  private passthrough: boolean;
 
   /** Re-mint the upstream Starlink token when within this many ms of expiry. */
   private static readonly STARLINK_REFRESH_SKEW_MS = 60_000;
@@ -274,20 +332,45 @@ export class StarlinkAuthProvider implements OAuthServerProvider {
     this.tokenLifetimeSec = options.tokenLifetimeSec ?? 3600;
     this.defaultClientId = options.defaultClientId;
     this.defaultClientSecret = options.defaultClientSecret;
+    this.passthrough = options.passthrough ?? false;
 
     const useFirestore =
       process.env.MCP_PERSISTENCE === 'firestore' ||
       (process.env.MCP_PERSISTENCE !== 'file' && !!process.env.GOOGLE_CLOUD_PROJECT);
 
-    if (useFirestore) {
-      this.tokenStore = new FirestoreTokenStore({ projectId: process.env.GOOGLE_CLOUD_PROJECT });
+    // Issued tokens always persist (Firestore on Cloud Run, file locally).
+    this.tokenStore = useFirestore
+      ? new FirestoreTokenStore({ projectId: process.env.GOOGLE_CLOUD_PROJECT })
+      : new TokenStore(options.tokenStorePath);
+
+    // Clients store: pass-through synthesizes clients on the fly; otherwise the
+    // DCR-registered store (persisted on Firestore, in-memory locally).
+    if (this.passthrough) {
+      this._clientsStore = new DynamicClientsStore();
+      logger.info('Auth provider in pass-through mode (client supplies Starlink credentials as OAuth client)');
+    } else if (useFirestore) {
       this._clientsStore = new FirestoreClientsStore({ projectId: process.env.GOOGLE_CLOUD_PROJECT });
-      logger.info('Auth provider using Firestore persistence');
     } else {
-      this.tokenStore = new TokenStore(options.tokenStorePath);
       this._clientsStore = new InMemoryClientsStore();
-      logger.info('Auth provider using file-backed token store + in-memory clients store');
     }
+    logger.info('Auth provider persistence', { tokens: useFirestore ? 'firestore' : 'file', passthrough: this.passthrough });
+  }
+
+  // -----------------------------------------------------------------------
+  // Pass-through hooks (called by the /authorize and /token middlewares)
+  // -----------------------------------------------------------------------
+
+  /** Record the redirect_uri presented for a client_id at /authorize. */
+  rememberClient(clientId: string, redirectUri?: string): void {
+    if (this._clientsStore instanceof DynamicClientsStore) {
+      this._clientsStore.remember(clientId, redirectUri);
+    }
+  }
+
+  /** Stash the client_secret presented at /token, keyed by the auth code. */
+  captureTokenSecret(code: string, secret: string): void {
+    this.pendingTokenSecrets.set(code, secret);
+    setTimeout(() => this.pendingTokenSecrets.delete(code), 5 * 60 * 1000);
   }
 
   get activeTokenCount(): number {
@@ -316,6 +399,20 @@ export class StarlinkAuthProvider implements OAuthServerProvider {
       resource: params.resource,
       createdAt: Date.now(),
     };
+
+    // Pass-through mode: the client_id IS the Starlink service account. We
+    // don't have the secret yet (it arrives at /token), so just issue an auth
+    // code and redirect — no login page, no credential validation here.
+    if (this.passthrough) {
+      const code = randomBytes(32).toString('hex');
+      this.authCodes.set(code, { pending, passthrough: true });
+      setTimeout(() => this.authCodes.delete(code), 5 * 60 * 1000);
+      const redirectUrl = new URL(pending.redirectUri);
+      redirectUrl.searchParams.set('code', code);
+      if (pending.state) redirectUrl.searchParams.set('state', pending.state);
+      res.redirect(redirectUrl.toString());
+      return;
+    }
 
     // Single-account mode: when the operator has configured a service account,
     // skip the credential-entry page and auto-log-in with it. The user never
@@ -421,8 +518,39 @@ export class StarlinkAuthProvider implements OAuthServerProvider {
     authorizationCode: string,
   ): Promise<OAuthTokens> {
     const entry = this.authCodes.get(authorizationCode);
-    if (!entry) throw new Error('Invalid authorization code');
+    if (!entry) throw new InvalidGrantError('Invalid authorization code');
     this.authCodes.delete(authorizationCode);
+
+    // Pass-through: the secret arrived at /token (captured by middleware). Mint
+    // a Starlink token with the presented client_id + secret — a successful
+    // grant IS the authentication. A failure means bad service-account creds.
+    if (entry.passthrough) {
+      const clientSecret = this.pendingTokenSecrets.get(authorizationCode);
+      this.pendingTokenSecrets.delete(authorizationCode);
+      if (!clientSecret) {
+        throw new InvalidClientError('client_secret is required (pass-through mode)');
+      }
+      let tokens;
+      try {
+        tokens = await mintClientCredentialsToken({
+          tokenUrl: this.tokenUrl,
+          clientId: entry.pending.clientId,
+          clientSecret,
+        });
+      } catch (err: any) {
+        logger.warn('Pass-through credential validation failed', { error: err.message });
+        throw new InvalidClientError('Invalid Starlink service account credentials');
+      }
+      const session: StarlinkSession = {
+        accessToken: tokens.access_token,
+        expiresAt: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : undefined,
+        clientId: entry.pending.clientId,
+        clientSecret,
+      };
+      return this.issueTokens(entry.pending.clientId, session);
+    }
+
+    if (!entry.session) throw new InvalidGrantError('Invalid authorization code');
     return this.issueTokens(entry.pending.clientId, entry.session);
   }
 
