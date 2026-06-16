@@ -5,7 +5,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 export const get_user_terminals: ToolDefinition = {
   schema: {
     name: 'get_user_terminals',
-    description: 'Get all user terminals — Required permission: Device management, View.<br/>Gets all user terminals on the account, filtered by the optional filter parameters, in paginated form — [GET /public/v2/user-terminals]',
+    description: 'Get all user terminals — Required permission: Device management, View.<br/>Gets all user terminals on the account, filtered by the optional filter parameters, in paginated form — [GET /public/v2/user-terminals] — Returns: content.results[].userTerminalId (string): User Terminal ID. This ID is not printed anywhere on the kit or hardware. Example: 00020900-002220cc-225b9199 | content.results[].nickname (string): Nickname of the user terminal. | content.results[].kitSerialNumber (string): Kit Serial Number. This ID can be found on the box that the hardware came in. Example: KIT00142069 | content.results[].dishSerialNumber (string): Dish Serial Number. This ID can be found on the dish itself. Example: 2DHT00542069 | content.results[].serviceLineNumber (string): The service line the user terminal is associated with if it has service, Example: AST-511274-31364-54 | content.results[].l2VpnCircuits (array): List of L2VPN circuits and associated VLANs configured for this terminal. | content.results[].l2VpnCircuits[].circuitId (string): Starlink generated Id of L2VPN circuit. | content.results[].l2VpnCircuits[].customerVlans (array): Customer VLANs are the inner tag and identify L2VPN customer traffic to and from a user terminal. | content.results[].l2VpnCircuits[].serviceVlan (number): Outer VLAN tag used for Q-in-Q and identifies a single ethernet virtual circuit (EVC) for a user terminal. Null if no service VLAN configured. | content.results[].routers (array): Routers currently bonded to this UT. | content.results[].routers[].routerId (string): Router Id. | content.results[].routers[].nickname (string): Nickname of the router. | content.results[].routers[].userTerminalId (string): User terminal Id this router is bonded to. | content.results[].routers[].configId (string): Router config this router is assigned to, or null if no config assigned. | content.results[].routers[].hardwareVersion (string): Deprecated field. Value will always be null | content.results[].routers[].lastBonded (string): Deprecated field. Value will always be null',
     inputSchema: {
           "type": "object",
           "properties": {
@@ -213,7 +213,7 @@ export const put_user_terminals_configs_assign: ToolDefinition = {
 export const get_user_terminals_l2vpn: ToolDefinition = {
   schema: {
     name: 'get_user_terminals_l2vpn',
-    description: 'Get L2VPN circuits available for this account — Required permission: Device command and configuration, View. — [GET /public/v2/user-terminals/l2vpn]',
+    description: 'Get L2VPN circuits available for this account — Required permission: Device command and configuration, View. — [GET /public/v2/user-terminals/l2vpn] — Returns: content[].circuitId (string): Starlink generated Id of L2VPN circuit. | content[].popName (string): Starlink PoP associated with this circuit.',
     inputSchema: {
           "type": "object",
           "properties": {}

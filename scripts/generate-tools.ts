@@ -84,6 +84,8 @@ interface ParsedOperation {
   bodyProperties: ParsedParam[];
   bodyRequired: string[];
   hasBody: boolean;
+  /** Compact "Returns: ..." doc built from the response schema's field descriptions. */
+  returnsDoc: string;
 }
 
 interface ParsedParam {
@@ -232,6 +234,94 @@ function buildParamDescription(name: string, resolvedSchema: SchemaObject, param
 }
 
 // ---------------------------------------------------------------------------
+// Response-schema docs
+//
+// The model otherwise receives raw JSON output with no field semantics. We walk
+// the 2xx response schema (through $ref wrappers, allOf, and arrays) and append
+// the documented field descriptions to the tool description as a "Returns:"
+// section, so the model knows what each field means (e.g. that
+// optInPriorityGB is a *subset* of priorityGB, not additive).
+// ---------------------------------------------------------------------------
+
+interface RespField {
+  path: string;
+  type: string;
+  desc: string;
+}
+
+/** Envelope fields that carry no useful semantics for the model. */
+const RESPONSE_ENVELOPE_SKIP = new Set(['errors', 'warnings', 'information']);
+const MAX_RESPONSE_FIELDS = 60;
+const MAX_RESPONSE_DEPTH = 9;
+/** Per-field description cap — generous enough to preserve "subset, not additive"-style caveats. */
+const MAX_RESPONSE_FIELD_DESC = 220;
+
+function collectResponseFields(
+  spec: OpenApiSpec,
+  schema: any,
+  path: string,
+  ancestry: Set<string>,
+  out: RespField[],
+  depth: number,
+): void {
+  if (!schema || out.length >= MAX_RESPONSE_FIELDS || depth > MAX_RESPONSE_DEPTH) return;
+
+  if (schema.$ref) {
+    if (ancestry.has(schema.$ref)) return; // cycle guard
+    const resolved = resolveRef(spec, schema.$ref);
+    if (!resolved) return;
+    const next = new Set(ancestry);
+    next.add(schema.$ref);
+    collectResponseFields(spec, resolved, path, next, out, depth);
+    return;
+  }
+  if (Array.isArray(schema.allOf)) {
+    for (const sub of schema.allOf) collectResponseFields(spec, sub, path, ancestry, out, depth);
+    return;
+  }
+  if (schema.type === 'array' && schema.items) {
+    collectResponseFields(spec, schema.items, `${path}[]`, ancestry, out, depth + 1);
+    return;
+  }
+  if (schema.properties) {
+    for (const [key, value] of Object.entries(schema.properties as Record<string, any>)) {
+      if (out.length >= MAX_RESPONSE_FIELDS) return;
+      if (RESPONSE_ENVELOPE_SKIP.has(key)) continue;
+      const childPath = path ? `${path}.${key}` : key;
+      const resolved = value && value.$ref ? resolveRef(spec, value.$ref) ?? value : value;
+      const desc = ((value && value.description) || (resolved && resolved.description) || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (desc) out.push({ path: childPath, type: mapType(resolved || {}), desc });
+      collectResponseFields(spec, value, childPath, ancestry, out, depth + 1);
+    }
+  }
+}
+
+function buildReturnsDoc(spec: OpenApiSpec, op: OperationObject): string {
+  const responses = op.responses as Record<string, any> | undefined;
+  if (!responses || typeof responses !== 'object') return '';
+  const key =
+    Object.keys(responses).find((k) => /^2\d\d$/.test(k)) ?? (responses['default'] ? 'default' : undefined);
+  if (!key) return '';
+  const content = responses[key]?.content;
+  const schema = content && (content['application/json'] || Object.values(content)[0]);
+  const sch = schema && (schema as any).schema;
+  if (!sch) return '';
+
+  const out: RespField[] = [];
+  collectResponseFields(spec, sch, '', new Set(), out, 0);
+  if (out.length === 0) return '';
+
+  const items = out.map((f) => {
+    let d = f.desc;
+    if (d.length > MAX_RESPONSE_FIELD_DESC) d = `${d.slice(0, MAX_RESPONSE_FIELD_DESC - 1)}…`;
+    return `${f.path} (${f.type})${d ? `: ${d}` : ''}`;
+  });
+  return `Returns: ${items.join(' | ')}`;
+}
+
+// ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
 
@@ -318,6 +408,7 @@ function parseOperations(spec: OpenApiSpec): ParsedOperation[] {
         bodyProperties,
         bodyRequired,
         hasBody,
+        returnsDoc: buildReturnsDoc(spec, op),
       });
     }
   }
@@ -395,6 +486,7 @@ function generateToolDescription(op: ParsedOperation): string {
     parts.push(op.description.replace(/\n/g, ' ').trim());
   }
   parts.push(`[${op.method} ${op.pathTemplate}]`);
+  if (op.returnsDoc) parts.push(op.returnsDoc);
   return parts.join(' — ').replace(/'/g, "\\'");
 }
 

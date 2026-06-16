@@ -5,7 +5,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 export const get_addresses: ToolDefinition = {
   schema: {
     name: 'get_addresses',
-    description: 'Get all addresses — Required permission: Account information, View.<br/>Returns all addresses on the account in paginated form. — [GET /public/v2/addresses]',
+    description: 'Get all addresses — Required permission: Account information, View.<br/>Returns all addresses on the account in paginated form. — [GET /public/v2/addresses] — Returns: content.results[].addressReferenceId (string): Reference identifier for address. Example: 55ec6574-10d8-bd9c-1951-d4184f4ae467 | content.results[].addressLines (array): The address lines for the address. Example: 1 Rocket Road | content.results[].locality (string): The town/locality of the address. Example: Hawthorne | content.results[].administrativeArea (string): The administrative area of the address. Example: California | content.results[].administrativeAreaCode (string): The administrative area code of the address. Example: CA | content.results[].region (string): The region of the address. Example: United States | content.results[].regionCode (string): The region code of the address. Example: US | content.results[].postalCode (string): The postal code of the address. Example: 90250 | content.results[].metadata (string): Optional field that can be used to store information about the address for external purposes | content.results[].formattedAddress (string): A user readable address. Example: 1 Rocket Road, Hawthorne, CA 90250-6844, US | content.results[].latitude (number): The latitude of the address: Example 33.92 | content.results[].longitude (number): The longitude of the address. Example: -118.32',
     inputSchema: {
           "type": "object",
           "properties": {
@@ -49,7 +49,7 @@ export const get_addresses: ToolDefinition = {
 export const post_addresses: ToolDefinition = {
   schema: {
     name: 'post_addresses',
-    description: 'Create address — Required permission: Account information, Edit. — [POST /public/v2/addresses]',
+    description: 'Create address — Required permission: Account information, Edit. — [POST /public/v2/addresses] — Returns: content.addressReferenceId (string): Reference identifier for address. Example: 55ec6574-10d8-bd9c-1951-d4184f4ae467 | content.addressLines (array): The address lines for the address. Example: 1 Rocket Road | content.locality (string): The town/locality of the address. Example: Hawthorne | content.administrativeArea (string): The administrative area of the address. Example: California | content.administrativeAreaCode (string): The administrative area code of the address. Example: CA | content.region (string): The region of the address. Example: United States | content.regionCode (string): The region code of the address. Example: US | content.postalCode (string): The postal code of the address. Example: 90250 | content.metadata (string): Optional field that can be used to store information about the address for external purposes | content.formattedAddress (string): A user readable address. Example: 1 Rocket Road, Hawthorne, CA 90250-6844, US | content.latitude (number): The latitude of the address: Example 33.92 | content.longitude (number): The longitude of the address. Example: -118.32',
     inputSchema: {
           "type": "object",
           "properties": {
@@ -132,7 +132,7 @@ export const post_addresses: ToolDefinition = {
 export const get_addresses_by_address_reference_id: ToolDefinition = {
   schema: {
     name: 'get_addresses_by_address_reference_id',
-    description: 'Get address — Required permission: Account information, View. — [GET /public/v2/addresses/{addressReferenceId}]',
+    description: 'Get address — Required permission: Account information, View. — [GET /public/v2/addresses/{addressReferenceId}] — Returns: content.addressReferenceId (string): Reference identifier for address. Example: 55ec6574-10d8-bd9c-1951-d4184f4ae467 | content.addressLines (array): The address lines for the address. Example: 1 Rocket Road | content.locality (string): The town/locality of the address. Example: Hawthorne | content.administrativeArea (string): The administrative area of the address. Example: California | content.administrativeAreaCode (string): The administrative area code of the address. Example: CA | content.region (string): The region of the address. Example: United States | content.regionCode (string): The region code of the address. Example: US | content.postalCode (string): The postal code of the address. Example: 90250 | content.metadata (string): Optional field that can be used to store information about the address for external purposes | content.formattedAddress (string): A user readable address. Example: 1 Rocket Road, Hawthorne, CA 90250-6844, US | content.latitude (number): The latitude of the address: Example 33.92 | content.longitude (number): The longitude of the address. Example: -118.32',
     inputSchema: {
           "type": "object",
           "properties": {
@@ -170,7 +170,7 @@ export const get_addresses_by_address_reference_id: ToolDefinition = {
 export const put_addresses_by_address_reference_id: ToolDefinition = {
   schema: {
     name: 'put_addresses_by_address_reference_id',
-    description: 'Update address — Required permission: Account information, Edit. — [PUT /public/v2/addresses/{addressReferenceId}]',
+    description: 'Update address — Required permission: Account information, Edit. — [PUT /public/v2/addresses/{addressReferenceId}] — Returns: content.addressReferenceId (string): Reference identifier for address. Example: 55ec6574-10d8-bd9c-1951-d4184f4ae467 | content.addressLines (array): The address lines for the address. Example: 1 Rocket Road | content.locality (string): The town/locality of the address. Example: Hawthorne | content.administrativeArea (string): The administrative area of the address. Example: California | content.administrativeAreaCode (string): The administrative area code of the address. Example: CA | content.region (string): The region of the address. Example: United States | content.regionCode (string): The region code of the address. Example: US | content.postalCode (string): The postal code of the address. Example: 90250 | content.metadata (string): Optional field that can be used to store information about the address for external purposes | content.formattedAddress (string): A user readable address. Example: 1 Rocket Road, Hawthorne, CA 90250-6844, US | content.latitude (number): The latitude of the address: Example 33.92 | content.longitude (number): The longitude of the address. Example: -118.32',
     inputSchema: {
           "type": "object",
           "properties": {

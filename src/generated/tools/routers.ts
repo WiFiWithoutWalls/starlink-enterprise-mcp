@@ -5,7 +5,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 export const get_routers_by_router_id: ToolDefinition = {
   schema: {
     name: 'get_routers_by_router_id',
-    description: 'Get router — Required permission: Device management, View. — [GET /public/v2/routers/{routerId}]',
+    description: 'Get router — Required permission: Device management, View. — [GET /public/v2/routers/{routerId}] — Returns: content.routerId (string): Router Id. | content.nickname (string): Nickname of the router. | content.userTerminalId (string): User terminal Id this router is bonded to. | content.configId (string): Router config this router is assigned to, or null if no config assigned. | content.hardwareVersion (string): Deprecated field. Value will always be null | content.lastBonded (string): Deprecated field. Value will always be null',
     inputSchema: {
           "type": "object",
           "properties": {
@@ -43,7 +43,7 @@ export const get_routers_by_router_id: ToolDefinition = {
 export const get_routers_configs: ToolDefinition = {
   schema: {
     name: 'get_routers_configs',
-    description: 'Get all router configs — Required permission: Device command and configuration, View.<br/>Return all router configs on this account in paginated form — [GET /public/v2/routers/configs]',
+    description: 'Get all router configs — Required permission: Device command and configuration, View.<br/>Return all router configs on this account in paginated form — [GET /public/v2/routers/configs] — Returns: content.results[].configId (string): Config Id. | content.results[].nickname (string): Nickname for this config. Must be less than 100 characters. | content.results[].routerConfigJson (string): Config in JSON format.',
     inputSchema: {
           "type": "object",
           "properties": {
@@ -121,7 +121,7 @@ export const post_routers_configs: ToolDefinition = {
 export const get_routers_configs_by_config_id: ToolDefinition = {
   schema: {
     name: 'get_routers_configs_by_config_id',
-    description: 'Get router config — Required permission: Device command and configuration, View. — [GET /public/v2/routers/configs/{configId}]',
+    description: 'Get router config — Required permission: Device command and configuration, View. — [GET /public/v2/routers/configs/{configId}] — Returns: content.configId (string): Config Id. | content.nickname (string): Nickname for this config. Must be less than 100 characters. | content.routerConfigJson (string): Config in JSON format.',
     inputSchema: {
           "type": "object",
           "properties": {
@@ -159,7 +159,7 @@ export const get_routers_configs_by_config_id: ToolDefinition = {
 export const put_routers_configs_by_config_id: ToolDefinition = {
   schema: {
     name: 'put_routers_configs_by_config_id',
-    description: 'Update router config — Required permission: Device command and configuration, Edit.<br/>Update a given router config. Any router assigned to this config will immediately receive the update if it is online. Otherwise, the router will receive the update when it comes online. — [PUT /public/v2/routers/configs/{configId}]',
+    description: 'Update router config — Required permission: Device command and configuration, Edit.<br/>Update a given router config. Any router assigned to this config will immediately receive the update if it is online. Otherwise, the router will receive the update when it comes online. — [PUT /public/v2/routers/configs/{configId}] — Returns: content.configId (string): Config Id. | content.nickname (string): Nickname for this config. Must be less than 100 characters. | content.routerConfigJson (string): Config in JSON format.',
     inputSchema: {
           "type": "object",
           "properties": {
@@ -254,7 +254,7 @@ export const put_routers_configs_assign: ToolDefinition = {
 export const get_routers_configs_default: ToolDefinition = {
   schema: {
     name: 'get_routers_configs_default',
-    description: 'Get default router config — Required permission: Device command and configuration, View.<br/>Gets the router config id that will be assigned to any routers when they are first added to this account. — [GET /public/v2/routers/configs/default]',
+    description: 'Get default router config — Required permission: Device command and configuration, View.<br/>Gets the router config id that will be assigned to any routers when they are first added to this account. — [GET /public/v2/routers/configs/default] — Returns: content.configId (string): Router configId that will be assigned to routers when they are first added to this account. Does not affect routers that are assigned no config.',
     inputSchema: {
           "type": "object",
           "properties": {}
@@ -316,7 +316,7 @@ export const put_routers_configs_default: ToolDefinition = {
 export const get_routers_configs_tls: ToolDefinition = {
   schema: {
     name: 'get_routers_configs_tls',
-    description: 'Get TLS configs — Required permission: Device command and configuration, View.<br/>Gets a paginated list of TLS configs on this account. — [GET /public/v2/routers/configs/tls]',
+    description: 'Get TLS configs — Required permission: Device command and configuration, View.<br/>Gets a paginated list of TLS configs on this account. — [GET /public/v2/routers/configs/tls] — Returns: content.configId (string): Router configId that will be assigned to routers when they are first added to this account. Does not affect routers that are assigned no config.',
     inputSchema: {
           "type": "object",
           "properties": {
@@ -433,7 +433,7 @@ export const delete_routers_configs_tls: ToolDefinition = {
 export const get_routers_local_content: ToolDefinition = {
   schema: {
     name: 'get_routers_local_content',
-    description: 'Get list of router local content files — Required permission: Device command and configuration, View. — [GET /public/v2/routers/local-content]',
+    description: 'Get list of router local content files — Required permission: Device command and configuration, View. — [GET /public/v2/routers/local-content] — Returns: content[].nickname (string): Uploaded file name | content[].uploadDate (string): Upload timestamp | content[].fileContentId (string): Id of uploaded local content file, used in router config HTTPS server | content[].fileContentHash (string): MD5 hash of the uploaded file used to verify integrity when router downloads the file for hosting. Used in router config HTTPS server',
     inputSchema: {
           "type": "object",
           "properties": {}
@@ -457,7 +457,7 @@ export const get_routers_local_content: ToolDefinition = {
 export const post_routers_local_content: ToolDefinition = {
   schema: {
     name: 'post_routers_local_content',
-    description: 'Upload router local content file — Required permission: Device command and configuration, Edit.<br/>Upload html file to allow it to be configured as the HTTPS server local content file for router configs. File must be HTML, under 4MB, and file name under 100 characters. Files are stored in a public bucket for configured routers to download. File should be attached as multipart/form-data. See https://starlink.readme.io/docs/local-content for example upload script. — [POST /public/v2/routers/local-content]',
+    description: 'Upload router local content file — Required permission: Device command and configuration, Edit.<br/>Upload html file to allow it to be configured as the HTTPS server local content file for router configs. File must be HTML, under 4MB, and file name under 100 characters. Files are stored in a public bucket for configured routers to download. File should be attached as multipart/form-data. See https://starlink.readme.io/docs/local-content for example upload script. — [POST /public/v2/routers/local-content] — Returns: content.nickname (string): File name of uploaded file | content.fileContentId (string): File id to go in router config HTTPS server FileContentId field | content.fileContentHash (string): File MD5 hash to go in router config HTTPS server FileContentHash field',
     inputSchema: {
           "type": "object",
           "properties": {

@@ -5,7 +5,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 export const get_contacts: ToolDefinition = {
   schema: {
     name: 'get_contacts',
-    description: 'Get contacts — Required permission: User management, Edit.<br/>Get list of contacts on the authenticated user\\\'s account. — [GET /public/v2/contacts]',
+    description: 'Get contacts — Required permission: User management, Edit.<br/>Get list of contacts on the authenticated user\\\'s account. — [GET /public/v2/contacts] — Returns: content.results[].subjectId (string): Unique subject ID given to this user. | content.results[].email (string): User email. | content.results[].roles (array): List of User roles which map to permissions on the specified account.',
     inputSchema: {
           "type": "object",
           "properties": {
@@ -41,7 +41,7 @@ export const get_contacts: ToolDefinition = {
 export const post_contacts: ToolDefinition = {
   schema: {
     name: 'post_contacts',
-    description: 'Create contact — Required permission: Admin Only - API User Management, Edit.<br/>Creates the contact if it is new, and adds the contact to the authenticated account. — [POST /public/v2/contacts]',
+    description: 'Create contact — Required permission: Admin Only - API User Management, Edit.<br/>Creates the contact if it is new, and adds the contact to the authenticated account. — [POST /public/v2/contacts] — Returns: content.subjectId (string): Unique subject ID given to this user. | content.email (string): User email. | content.roles (array): List of User roles which map to permissions on the specified account.',
     inputSchema: {
           "type": "object",
           "properties": {
@@ -104,7 +104,7 @@ export const post_contacts: ToolDefinition = {
 export const put_contacts_by_subject_id: ToolDefinition = {
   schema: {
     name: 'put_contacts_by_subject_id',
-    description: 'Update contact — Required permission: Admin Only - API User Management, Edit.<br/>Update contact on the authenticated account. — [PUT /public/v2/contacts/{subjectId}]',
+    description: 'Update contact — Required permission: Admin Only - API User Management, Edit.<br/>Update contact on the authenticated account. — [PUT /public/v2/contacts/{subjectId}] — Returns: content.subjectId (string): Unique subject ID given to this user. | content.email (string): User email. | content.roles (array): List of User roles which map to permissions on the specified account.',
     inputSchema: {
           "type": "object",
           "properties": {
