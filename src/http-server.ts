@@ -224,9 +224,7 @@ function wireApp(
     const body = (req as any).body;
 
     if (isInitializeRequest(body)) {
-      const extra = req.auth?.extra as Record<string, unknown> | undefined;
-      const starlinkAccessToken = extra?.starlinkAccessToken as string | undefined;
-      const { server } = createAuthenticatedMcpServer(config, starlinkAccessToken);
+      const { server } = createAuthenticatedMcpServer(config, req.auth?.extra as Record<string, unknown> | undefined);
 
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
@@ -285,18 +283,27 @@ function wireApp(
 
 function createAuthenticatedMcpServer(
   config: ReturnType<typeof loadConfig>,
-  starlinkAccessToken?: string,
+  extra?: Record<string, unknown>,
 ) {
   const server = new Server(
     { name: config.name, version: config.version },
     { capabilities: { tools: {} } },
   );
 
-  // Use the per-user Starlink access token resolved from the OAuth session.
-  // Fall back to the operator-level config (stdio-style) if absent.
-  const clientConfig = starlinkAccessToken
-    ? { apiUrl: config.starlink.apiUrl, tokenUrl: config.starlink.tokenUrl, accessToken: starlinkAccessToken, timeout: config.starlink.timeout }
-    : config.starlink;
+  const clientId = extra?.starlinkClientId as string | undefined;
+  const clientSecret = extra?.starlinkClientSecret as string | undefined;
+  const accessToken = extra?.starlinkAccessToken as string | undefined;
+
+  // Prefer the session's service-account credentials: the client then mints and
+  // re-mints its own Starlink token, so a ~15-min upstream token expiring
+  // mid-session self-heals (re-mint on expiry and on 401). Fall back to a static
+  // token, then to the operator-level config (stdio-style).
+  const clientConfig =
+    clientId && clientSecret
+      ? { apiUrl: config.starlink.apiUrl, tokenUrl: config.starlink.tokenUrl, clientId, clientSecret, timeout: config.starlink.timeout }
+      : accessToken
+        ? { apiUrl: config.starlink.apiUrl, tokenUrl: config.starlink.tokenUrl, accessToken, timeout: config.starlink.timeout }
+        : config.starlink;
 
   const client = new StarlinkClient(clientConfig);
   registerTools(server, client);

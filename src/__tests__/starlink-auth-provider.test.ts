@@ -194,6 +194,9 @@ describe('StarlinkAuthProvider pass-through mode', () => {
 
     const info = await sa.verifyAccessToken(tokens.access_token);
     expect((info.extra as any).starlinkAccessToken).toBe('sl-pt');
+    // Session client needs the creds to self-mint/re-mint (no mid-session reconnect).
+    expect((info.extra as any).starlinkClientId).toBe('sa-client-id');
+    expect((info.extra as any).starlinkClientSecret).toBe('sa-secret');
   });
 
   it('rejects bad service-account credentials at the code exchange', async () => {

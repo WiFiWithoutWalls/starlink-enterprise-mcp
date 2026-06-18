@@ -630,6 +630,10 @@ export class StarlinkAuthProvider implements OAuthServerProvider {
       expiresAt: Math.floor(stored.expiresAt / 1000),
       extra: {
         starlinkAccessToken: stored.starlinkAccessToken,
+        // The session client uses these to mint/re-mint its own Starlink token,
+        // so a 15-min upstream token expiring mid-session self-heals (no reconnect).
+        starlinkClientId: stored.starlinkClientId,
+        starlinkClientSecret: stored.starlinkClientSecret,
       },
     };
   }
