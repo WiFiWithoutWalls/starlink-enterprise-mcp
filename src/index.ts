@@ -108,17 +108,12 @@ export function createMcpServer(
   return { server, client };
 }
 
-/** Builds the task store for this process, or undefined when tasks are off. */
-export async function buildTaskStore(): Promise<TaskStore | undefined> {
-  return createTaskStore();
-}
-
 export class StarlinkMCPServer {
   private server: Server;
   private client: StarlinkClient;
 
-  constructor(config: MCPServerConfig) {
-    const { server, client } = createMcpServer(config);
+  constructor(config: MCPServerConfig, taskStore?: TaskStore) {
+    const { server, client } = createMcpServer(config, { taskStore });
     this.server = server;
     this.client = client;
     process.on('SIGINT', async () => {
@@ -144,7 +139,9 @@ export async function main(): Promise<void> {
     await startHttpServer();
   } else {
     const config = loadConfig();
-    const server = new StarlinkMCPServer(config);
+    // A stdio server is a single long-lived process, so an in-memory task store
+    // is sufficient here — there is no second instance to share state with.
+    const server = new StarlinkMCPServer(config, await createTaskStore());
     await server.run();
   }
 }
