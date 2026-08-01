@@ -14,12 +14,36 @@ const LEVEL_VALUES: Record<LogLevel, number> = {
   error: 3,
 };
 
+/**
+ * MCP's `logging/setLevel` uses the eight syslog severities (RFC 5424); this
+ * logger has four. Anything at or above `error` collapses onto error, since
+ * we have nothing more severe to escalate to.
+ */
+const MCP_LEVEL_MAP: Record<string, LogLevel> = {
+  debug: 'debug',
+  info: 'info',
+  notice: 'info',
+  warning: 'warn',
+  error: 'error',
+  critical: 'error',
+  alert: 'error',
+  emergency: 'error',
+};
+
 class Logger {
   private level: number;
 
   constructor() {
     const envLevel = (process.env.LOG_LEVEL || 'info').toLowerCase();
     this.level = LEVEL_VALUES[envLevel as LogLevel] ?? LEVEL_VALUES.info;
+  }
+
+  /** Sets the minimum level to emit, accepting either our names or MCP's. */
+  setLevel(level: string): void {
+    const mapped = MCP_LEVEL_MAP[level.toLowerCase()] ?? (level.toLowerCase() as LogLevel);
+    const value = LEVEL_VALUES[mapped];
+    if (value === undefined) return;
+    this.level = value;
   }
 
   private log(level: LogLevel, message: string, context?: Record<string, unknown>): void {

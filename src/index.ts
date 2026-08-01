@@ -10,11 +10,15 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { SetLevelRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import type { TaskStore } from '@modelcontextprotocol/sdk/experimental/index.js';
 import { StarlinkClient } from './starlink-client.js';
 import { MCPServerConfig } from './types/config.js';
 import { logger } from './utils/logger.js';
 import { getAllToolDefinitions, registerAllTools } from './tools/index.js';
 import { DEFAULT_TOKEN_URL } from './auth/starlink-token-manager.js';
+import { buildImplementation, serverInstructions } from './server-metadata.js';
+import { createTaskStore, tasksCapability } from './tasks/index.js';
 
 export const DEFAULT_API_URL = 'https://web-api.starlink.com';
 
@@ -70,16 +74,43 @@ export function registerTools(server: Server, client: StarlinkClient): void {
 /**
  * Creates a configured MCP Server + StarlinkClient pair without connecting a
  * transport. Used by both the stdio and HTTP code paths.
+ *
+ * Passing a `taskStore` is what makes the SDK register the `tasks/*` handlers,
+ * so the store and the advertised `tasks` capability must appear together.
  */
-export function createMcpServer(config: MCPServerConfig): { server: Server; client: StarlinkClient } {
-  const server = new Server(
-    { name: config.name, version: config.version },
-    { capabilities: { tools: {} } },
-  );
+export function createMcpServer(
+  config: MCPServerConfig,
+  options: { taskStore?: TaskStore } = {},
+): { server: Server; client: StarlinkClient } {
+  const server = new Server(buildImplementation(config.name, config.version), {
+    capabilities: {
+      // The Starlink tool surface is fixed at build time from the OpenAPI spec,
+      // so there is no list_changed notification to promise.
+      tools: { listChanged: false },
+      logging: {},
+      ...(options.taskStore ? { tasks: tasksCapability() } : {}),
+    },
+    instructions: serverInstructions(),
+    taskStore: options.taskStore,
+  });
+
   const client = new StarlinkClient(config.starlink);
   registerTools(server, client);
+
+  // logging/setLevel is required of any server advertising the logging
+  // capability. We honour it by raising the process log level.
+  server.setRequestHandler(SetLevelRequestSchema, async (request) => {
+    logger.setLevel(request.params.level);
+    return {};
+  });
+
   server.onerror = (error) => logger.error('[MCP Error]', { error: String(error) });
   return { server, client };
+}
+
+/** Builds the task store for this process, or undefined when tasks are off. */
+export async function buildTaskStore(): Promise<TaskStore | undefined> {
+  return createTaskStore();
 }
 
 export class StarlinkMCPServer {
