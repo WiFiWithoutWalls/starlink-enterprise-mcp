@@ -84,8 +84,17 @@ interface ParsedOperation {
   bodyProperties: ParsedParam[];
   bodyRequired: string[];
   hasBody: boolean;
-  /** Compact "Returns: ..." doc built from the response schema's field descriptions. */
+  /**
+   * Compact "Returns: ..." doc built from the response schema's field
+   * descriptions. Only folded into the description when `outputSchema` is
+   * null — otherwise the schema carries the same information structurally and
+   * repeating it in prose just doubles the tools/list payload.
+   */
   returnsDoc: string;
+  /** JSON Schema 2020-12 for the result's `structuredContent`, or null. */
+  outputSchema: object | null;
+  /** Human-readable display name (MCP `title`), from the OpenAPI summary. */
+  title: string;
 }
 
 interface ParsedParam {
@@ -322,6 +331,148 @@ function buildReturnsDoc(spec: OpenApiSpec, op: OperationObject): string {
 }
 
 // ---------------------------------------------------------------------------
+// Output schemas (MCP structured tool output)
+//
+// MCP 2025-06-18 added `outputSchema` on a tool plus `structuredContent` on the
+// result. We translate the OpenAPI 2xx response schema into JSON Schema
+// 2020-12 (the dialect MCP standardized on in 2025-11-25) so clients get typed,
+// machine-readable results instead of an opaque JSON blob.
+//
+// The translation is deliberately PERMISSIVE. Starlink's spec is not a perfect
+// description of what the API returns, and a strict client that rejects a
+// mismatched result would break the tool entirely. So we never emit `required`
+// and never emit `additionalProperties: false` — a response with extra or
+// missing fields still validates. Only the shape of fields we do describe is
+// asserted, and even that is widened wherever the spec says `nullable`.
+// ---------------------------------------------------------------------------
+
+/** Node budget per schema — keeps tools/list from ballooning on deep responses. */
+const MAX_OUTPUT_SCHEMA_NODES = 400;
+const MAX_OUTPUT_SCHEMA_DEPTH = 8;
+
+interface JsonSchemaNode {
+  type?: string | string[];
+  description?: string;
+  properties?: Record<string, JsonSchemaNode>;
+  items?: JsonSchemaNode;
+  enum?: unknown[];
+  format?: string;
+}
+
+/** Maps an OpenAPI type to its JSON Schema equivalent, widening for `nullable`. */
+function outputType(schema: any): string | string[] | undefined {
+  const raw = schema.type;
+  if (!raw) return undefined;
+  const base = raw === 'integer' || raw === 'int' ? 'integer' : raw === 'number' ? 'number' : raw;
+  return schema.nullable === true ? [base, 'null'] : base;
+}
+
+/**
+ * Converts one OpenAPI schema node to JSON Schema 2020-12.
+ *
+ * Returns `{}` (match-anything) once the depth or node budget is exhausted, so
+ * a truncated schema still validates every real response rather than rejecting
+ * the parts we chose not to describe.
+ */
+function toOutputSchema(
+  spec: OpenApiSpec,
+  schema: any,
+  ancestry: Set<string>,
+  budget: { nodes: number },
+  depth: number,
+): JsonSchemaNode {
+  if (!schema || depth > MAX_OUTPUT_SCHEMA_DEPTH || budget.nodes <= 0) return {};
+
+  if (schema.$ref) {
+    if (ancestry.has(schema.$ref)) return {}; // cycle guard
+    const resolved = resolveRef(spec, schema.$ref);
+    if (!resolved) return {};
+    const next = new Set(ancestry);
+    next.add(schema.$ref);
+    return toOutputSchema(spec, resolved, next, budget, depth);
+  }
+
+  if (Array.isArray(schema.allOf)) {
+    // Flatten allOf into a single object — MCP clients vary in composition
+    // support, and a merged object is the safest common denominator.
+    const merged: JsonSchemaNode = { type: 'object', properties: {} };
+    for (const sub of schema.allOf) {
+      const part = toOutputSchema(spec, sub, ancestry, budget, depth);
+      if (part.properties) Object.assign(merged.properties!, part.properties);
+      if (part.description && !merged.description) merged.description = part.description;
+    }
+    if (Object.keys(merged.properties!).length === 0) delete merged.properties;
+    return merged;
+  }
+
+  // oneOf/anyOf collapse to match-anything: the spec uses them for polymorphic
+  // payloads we cannot narrow safely.
+  if (schema.oneOf || schema.anyOf) return {};
+
+  budget.nodes--;
+  const node: JsonSchemaNode = {};
+  const type = outputType(schema);
+  if (type) node.type = type;
+
+  const desc = (schema.description || '').replace(/\s+/g, ' ').trim();
+  if (desc) {
+    node.description = desc.length > MAX_RESPONSE_FIELD_DESC
+      ? `${desc.slice(0, MAX_RESPONSE_FIELD_DESC - 1)}…`
+      : desc;
+  }
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) node.enum = schema.enum;
+  if (schema.format === 'date-time' || schema.format === 'date') node.format = schema.format;
+
+  if (schema.type === 'array') {
+    node.items = schema.items ? toOutputSchema(spec, schema.items, ancestry, budget, depth + 1) : {};
+    return node;
+  }
+
+  if (schema.properties) {
+    const properties: Record<string, JsonSchemaNode> = {};
+    for (const [key, value] of Object.entries(schema.properties as Record<string, any>)) {
+      if (budget.nodes <= 0) break;
+      // Skip the ServiceResponse envelope's diagnostic arrays. They appear on
+      // every one of the 55 responses and describing them 55 times costs real
+      // context for information the model never acts on. Omitting them is safe
+      // precisely because the schema is permissive: they still arrive in the
+      // payload and still validate as unconstrained extra properties.
+      if (RESPONSE_ENVELOPE_SKIP.has(key)) continue;
+      properties[key] = toOutputSchema(spec, value, ancestry, budget, depth + 1);
+    }
+    if (Object.keys(properties).length > 0) {
+      node.properties = properties;
+      node.type = 'object';
+    }
+  }
+
+  return node;
+}
+
+/**
+ * Builds a tool's `outputSchema` from its 2xx response, or null when the
+ * response has no object-typed schema (MCP requires `type: "object"` at the
+ * root, and a tool without an outputSchema simply returns text content).
+ */
+function buildOutputSchema(spec: OpenApiSpec, op: OperationObject): object | null {
+  const responses = op.responses as Record<string, any> | undefined;
+  if (!responses || typeof responses !== 'object') return null;
+  const key =
+    Object.keys(responses).find((k) => /^2\d\d$/.test(k)) ?? (responses['default'] ? 'default' : undefined);
+  if (!key) return null;
+  const content = responses[key]?.content;
+  const schema = content && (content['application/json'] || Object.values(content)[0]);
+  const sch = schema && (schema as any).schema;
+  if (!sch) return null;
+
+  const built = toOutputSchema(spec, sch, new Set(), { nodes: MAX_OUTPUT_SCHEMA_NODES }, 0);
+  // MCP requires an object at the root, and an object with no described
+  // properties tells the model nothing it doesn't already know.
+  if (built.type !== 'object' || !built.properties) return null;
+  return built;
+}
+
+// ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
 
@@ -409,6 +560,8 @@ function parseOperations(spec: OpenApiSpec): ParsedOperation[] {
         bodyRequired,
         hasBody,
         returnsDoc: buildReturnsDoc(spec, op),
+        outputSchema: buildOutputSchema(spec, op),
+        title: op.summary || '',
       });
     }
   }
@@ -486,7 +639,9 @@ function generateToolDescription(op: ParsedOperation): string {
     parts.push(op.description.replace(/\n/g, ' ').trim());
   }
   parts.push(`[${op.method} ${op.pathTemplate}]`);
-  if (op.returnsDoc) parts.push(op.returnsDoc);
+  // With an outputSchema the field semantics ship structurally; repeating them
+  // as prose would double the description for no extra information.
+  if (op.returnsDoc && !op.outputSchema) parts.push(op.returnsDoc);
   return parts.join(' — ').replace(/'/g, "\\'");
 }
 
@@ -532,12 +687,7 @@ function generateHandlerBody(op: ParsedOperation): string {
   lines.push(requestArgs.join(',\n') + ',');
   lines.push(`    });`);
   lines.push(``);
-  lines.push(`    return {`);
-  lines.push(`      content: [{`);
-  lines.push(`        type: 'text' as const,`);
-  lines.push(`        text: JSON.stringify(response, null, 2),`);
-  lines.push(`      }],`);
-  lines.push(`    };`);
+  lines.push(`    return toCallToolResult(response${op.outputSchema ? '' : ', false'});`);
 
   return lines.join('\n');
 }
@@ -546,6 +696,7 @@ function generateToolFile(_tag: string, operations: ParsedOperation[]): string {
   const lines: string[] = [];
   lines.push(`// Auto-generated by scripts/generate-tools.ts — DO NOT EDIT`);
   lines.push(`import type { ToolDefinition, GenericApiClient } from '../types.js';`);
+  lines.push(`import { toCallToolResult } from '../types.js';`);
   lines.push(`import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';`);
   lines.push(``);
 
@@ -556,8 +707,13 @@ function generateToolFile(_tag: string, operations: ParsedOperation[]): string {
     lines.push(`export const ${identifier}: ToolDefinition = {`);
     lines.push(`  schema: {`);
     lines.push(`    name: '${escapeString(op.toolName)}',`);
+    if (op.title) lines.push(`    title: '${escapeString(op.title)}',`);
     lines.push(`    description: '${escapeString(desc)}',`);
     lines.push(`    inputSchema: ${inputSchema.replace(/\n/g, '\n    ')},`);
+    if (op.outputSchema) {
+      const outputSchema = JSON.stringify(op.outputSchema, null, 6);
+      lines.push(`    outputSchema: ${outputSchema.replace(/\n/g, '\n    ')},`);
+    }
     lines.push(`  },`);
     lines.push(`  handler: async (args: Record<string, unknown>, client: GenericApiClient): Promise<CallToolResult> => {`);
     lines.push(generateHandlerBody(op));
@@ -621,9 +777,66 @@ export interface GenericApiClient {
   }): Promise<StarlinkApiResponse<T>>;
 }
 
+export interface ToolSchema {
+  name: string;
+  /** Human-readable display name (MCP 2025-06-18 \`title\`). */
+  title?: string;
+  description: string;
+  inputSchema: object;
+  /** JSON Schema 2020-12 for \`structuredContent\` (MCP 2025-06-18). */
+  outputSchema?: object;
+}
+
 export interface ToolDefinition {
-  schema: { name: string; description: string; inputSchema: object };
+  schema: ToolSchema;
   handler: (args: Record<string, unknown>, client: GenericApiClient) => Promise<CallToolResult>;
+}
+
+/**
+ * Structured output is on by default. Operators can fall back to text-only
+ * results with MCP_STRUCTURED_OUTPUT=false — useful against a client that
+ * validates \`structuredContent\` strictly and a Starlink response that has
+ * drifted from the published spec.
+ *
+ * The toggle MUST be read by both the tool listing and the handlers: a tool
+ * that advertises an outputSchema and then omits structuredContent is invalid.
+ */
+export function structuredOutputEnabled(): boolean {
+  return process.env.MCP_STRUCTURED_OUTPUT !== 'false';
+}
+
+/** True for plain JSON objects — the only thing \`structuredContent\` accepts. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Converts a Starlink API response into a CallToolResult.
+ *
+ * Upstream failures come back as \`isError: true\` rather than a JSON-RPC error:
+ * per MCP, errors originating *in* the tool belong in the result so the model
+ * can see them and self-correct. Only failures to *find* the tool are protocol
+ * errors.
+ */
+export function toCallToolResult(
+  response: StarlinkApiResponse,
+  withStructuredContent = true,
+): CallToolResult {
+  if (!response.success) {
+    return {
+      content: [{ type: 'text' as const, text: response.error ?? response.message ?? 'Starlink API request failed' }],
+      isError: true,
+    };
+  }
+
+  const payload = response.data;
+  const result: CallToolResult = {
+    content: [{ type: 'text' as const, text: JSON.stringify(payload ?? {}, null, 2) }],
+  };
+  if (withStructuredContent && structuredOutputEnabled()) {
+    result.structuredContent = isPlainObject(payload) ? payload : {};
+  }
+  return result;
 }
 `;
 }

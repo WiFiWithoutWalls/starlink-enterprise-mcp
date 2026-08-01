@@ -18,7 +18,64 @@ export interface GenericApiClient {
   }): Promise<StarlinkApiResponse<T>>;
 }
 
+export interface ToolSchema {
+  name: string;
+  /** Human-readable display name (MCP 2025-06-18 `title`). */
+  title?: string;
+  description: string;
+  inputSchema: object;
+  /** JSON Schema 2020-12 for `structuredContent` (MCP 2025-06-18). */
+  outputSchema?: object;
+}
+
 export interface ToolDefinition {
-  schema: { name: string; description: string; inputSchema: object };
+  schema: ToolSchema;
   handler: (args: Record<string, unknown>, client: GenericApiClient) => Promise<CallToolResult>;
+}
+
+/**
+ * Structured output is on by default. Operators can fall back to text-only
+ * results with MCP_STRUCTURED_OUTPUT=false — useful against a client that
+ * validates `structuredContent` strictly and a Starlink response that has
+ * drifted from the published spec.
+ *
+ * The toggle MUST be read by both the tool listing and the handlers: a tool
+ * that advertises an outputSchema and then omits structuredContent is invalid.
+ */
+export function structuredOutputEnabled(): boolean {
+  return process.env.MCP_STRUCTURED_OUTPUT !== 'false';
+}
+
+/** True for plain JSON objects — the only thing `structuredContent` accepts. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Converts a Starlink API response into a CallToolResult.
+ *
+ * Upstream failures come back as `isError: true` rather than a JSON-RPC error:
+ * per MCP, errors originating *in* the tool belong in the result so the model
+ * can see them and self-correct. Only failures to *find* the tool are protocol
+ * errors.
+ */
+export function toCallToolResult(
+  response: StarlinkApiResponse,
+  withStructuredContent = true,
+): CallToolResult {
+  if (!response.success) {
+    return {
+      content: [{ type: 'text' as const, text: response.error ?? response.message ?? 'Starlink API request failed' }],
+      isError: true,
+    };
+  }
+
+  const payload = response.data;
+  const result: CallToolResult = {
+    content: [{ type: 'text' as const, text: JSON.stringify(payload ?? {}, null, 2) }],
+  };
+  if (withStructuredContent && structuredOutputEnabled()) {
+    result.structuredContent = isPlainObject(payload) ? payload : {};
+  }
+  return result;
 }

@@ -9,6 +9,8 @@
  * Each user signs in with their own Starlink V2 service-account credentials on
  * the hosted login page; the verified per-user Starlink bearer is attached to
  * that session's tool calls.
+ *
+ * The transport runs stateless by default (see `statelessEnabled`).
  */
 
 import { randomUUID, createHash } from 'node:crypto';
@@ -17,12 +19,13 @@ import rateLimit from 'express-rate-limit';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import type { TaskStore } from '@modelcontextprotocol/sdk/experimental/index.js';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
-import { loadConfig, registerTools } from './index.js';
-import { StarlinkClient } from './starlink-client.js';
+import { createMcpServer, loadConfig } from './index.js';
 import { StarlinkAuthProvider } from './auth/starlink-auth-provider.js';
+import { createTaskStore } from './tasks/index.js';
 import { logger } from './utils/logger.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
@@ -33,10 +36,44 @@ interface AuthenticatedRequest extends IncomingMessage {
 }
 
 /**
+ * Stateless mode: no `Mcp-Session-Id`, and a fresh Server + transport per
+ * request. This is the default because it is the only mode that is correct on
+ * an autoscaled host.
+ *
+ * With sessions, `initialize` builds in-memory state on one instance and the
+ * next `tools/call` gets load-balanced to a different instance that has never
+ * heard of that session ID, which fails with "Invalid or missing session ID".
+ * Stateless has no such affinity requirement.
+ *
+ * Nothing is lost here: this server sends no server-initiated messages (the
+ * tool list is fixed at build time, and there are no resources or prompts to
+ * subscribe to), so the standalone SSE stream that sessions exist to support
+ * has nothing to carry. Set MCP_STATELESS=false for the session-based
+ * transport on a single-instance deployment.
+ */
+export function statelessEnabled(): boolean {
+  return process.env.MCP_STATELESS !== 'false';
+}
+
+/**
+ * Returns plain JSON instead of an SSE stream for POST responses. Off by
+ * default: SSE is the spec's preferred shape and works through the usual
+ * proxies. Turn it on for an intermediary that buffers or breaks event streams.
+ */
+function jsonResponseEnabled(): boolean {
+  return process.env.MCP_JSON_RESPONSE === 'true';
+}
+
+/**
  * Build the Express app + auth provider without binding to a port.
  * Used by both `startHttpServer()` and the test harness.
  */
-export function createApp(): { app: express.Express; authProvider: StarlinkAuthProvider; baseUrl: URL; mcpUrl: URL } {
+export async function createApp(): Promise<{
+  app: express.Express;
+  authProvider: StarlinkAuthProvider;
+  baseUrl: URL;
+  mcpUrl: URL;
+}> {
   const config = loadConfig();
   const port = parseInt(process.env.PORT || process.env.MCP_PORT || '3000', 10);
   const baseUrl = new URL(process.env.MCP_BASE_URL || `http://localhost:${port}`);
@@ -54,12 +91,13 @@ export function createApp(): { app: express.Express; authProvider: StarlinkAuthP
     passthrough: process.env.MCP_AUTH_MODE === 'passthrough',
   });
 
-  const { app } = wireApp(config, authProvider, baseUrl, mcpUrl);
+  const taskStore = await createTaskStore();
+  const { app } = wireApp(config, authProvider, baseUrl, mcpUrl, taskStore);
   return { app, authProvider, baseUrl, mcpUrl };
 }
 
 export async function startHttpServer(): Promise<void> {
-  const { app, baseUrl, mcpUrl } = createApp();
+  const { app, baseUrl, mcpUrl } = await createApp();
   const config = loadConfig();
   const port = parseInt(process.env.PORT || process.env.MCP_PORT || '3000', 10);
   const host = process.env.MCP_HOST || '0.0.0.0';
@@ -70,6 +108,7 @@ export async function startHttpServer(): Promise<void> {
       port,
       authorize: `${baseUrl.origin}/authorize`,
       mcp: mcpUrl.href,
+      mode: statelessEnabled() ? 'stateless' : 'session',
     });
     if (config.debug) {
       logger.debug('Debug mode enabled', { apiUrl: config.starlink.apiUrl });
@@ -77,22 +116,58 @@ export async function startHttpServer(): Promise<void> {
   });
 }
 
+/**
+ * Origins permitted to call this server, from MCP_ALLOWED_ORIGINS.
+ *
+ * Unset means "no browser origin restriction", which is the right default for a
+ * hosted, bearer-gated deployment whose callers are native MCP clients that
+ * send no Origin at all. Set it whenever the server is reachable from a
+ * browser, or bound to localhost, where DNS rebinding is a real attack.
+ */
+function allowedOrigins(): string[] | null {
+  const raw = process.env.MCP_ALLOWED_ORIGINS?.trim();
+  if (!raw) return null;
+  const list = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  return list.length > 0 ? list : null;
+}
+
 function wireApp(
   config: ReturnType<typeof loadConfig>,
   authProvider: StarlinkAuthProvider,
   baseUrl: URL,
   mcpUrl: URL,
+  taskStore?: TaskStore,
 ): { app: express.Express; sessions: Map<string, { transport: StreamableHTTPServerTransport; server: Server }> } {
   const app = express();
   app.set('trust proxy', 1);
 
-  // CORS
+  // Origin validation. MCP 2025-11-25 requires a rejected Origin to be answered
+  // with 403, not a silent CORS failure — the caller should learn it was refused
+  // rather than see an opaque network error.
+  const origins = allowedOrigins();
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origins && origin && !origins.includes(origin)) {
+      logger.warn('Rejected request with disallowed Origin', { origin, path: req.path });
+      res.status(403).json({ error: 'forbidden', error_description: `Invalid Origin: ${origin}` });
+      return;
+    }
+    next();
+  });
+
+  // CORS. When an allowlist exists we echo the caller's own origin rather than
+  // a wildcard, so credentialed browser requests keep working.
   const corsOrigin = process.env.MCP_CORS_ORIGIN || '*';
   app.use((_req, res, next) => {
-    res.header('Access-Control-Allow-Origin', corsOrigin);
+    const origin = _req.headers.origin;
+    res.header('Access-Control-Allow-Origin', origins && origin ? origin : corsOrigin);
+    if (origins) res.header('Vary', 'Origin');
     res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, mcp-session-id, Accept');
-    res.header('Access-Control-Expose-Headers', 'mcp-session-id');
+    res.header(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, mcp-session-id, mcp-protocol-version, Accept, Last-Event-ID',
+    );
+    res.header('Access-Control-Expose-Headers', 'mcp-session-id, WWW-Authenticate');
     if (_req.method === 'OPTIONS') {
       res.sendStatus(204);
       return;
@@ -219,15 +294,55 @@ function wireApp(
   const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(mcpUrl);
   const bearerAuth = requireBearerAuth({ verifier: authProvider, resourceMetadataUrl });
 
+  const stateless = statelessEnabled();
+  const enableJsonResponse = jsonResponseEnabled();
+
+  /**
+   * Serves one request on a throwaway Server + transport pair.
+   *
+   * The SDK forbids reusing a stateless transport (request IDs would collide
+   * between clients), so both are built per request and torn down when the
+   * response closes.
+   */
+  const handleStatelessRequest = async (req: AuthenticatedRequest, res: ServerResponse) => {
+    const { server } = createAuthenticatedMcpServer(
+      config,
+      req.auth?.extra as Record<string, unknown> | undefined,
+      taskStore,
+    );
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse,
+    });
+
+    res.on('close', () => {
+      void transport.close().catch(() => {});
+      void server.close().catch(() => {});
+    });
+
+    await server.connect(transport);
+    await transport.handleRequest(req, res, (req as any).body);
+  };
+
   app.post('/mcp', bearerAuth, async (req: AuthenticatedRequest, res: ServerResponse) => {
+    if (stateless) {
+      await handleStatelessRequest(req, res);
+      return;
+    }
+
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     const body = (req as any).body;
 
     if (isInitializeRequest(body)) {
-      const { server } = createAuthenticatedMcpServer(config, req.auth?.extra as Record<string, unknown> | undefined);
+      const { server } = createAuthenticatedMcpServer(
+        config,
+        req.auth?.extra as Record<string, unknown> | undefined,
+        taskStore,
+      );
 
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
+        enableJsonResponse,
         onsessioninitialized: (sid: string) => {
           sessions.set(sid, { transport, server });
         },
@@ -251,6 +366,21 @@ function wireApp(
   });
 
   app.get('/mcp', bearerAuth, async (req: AuthenticatedRequest, res: ServerResponse) => {
+    if (stateless) {
+      // The standalone GET stream carries server-initiated messages, which
+      // require a session to be addressed to. Say so plainly instead of
+      // handing back a stream that can never produce anything.
+      res.writeHead(405, { 'Content-Type': 'application/json', Allow: 'POST' });
+      res.end(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: 'Method not allowed: server runs in stateless mode' },
+          id: null,
+        }),
+      );
+      return;
+    }
+
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId || !sessions.has(sessionId)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -261,6 +391,14 @@ function wireApp(
   });
 
   app.delete('/mcp', bearerAuth, async (req: AuthenticatedRequest, res: ServerResponse) => {
+    if (stateless) {
+      // Nothing to tear down, and a client that politely closes its session
+      // should not see that as a failure.
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'no session to terminate (stateless mode)' }));
+      return;
+    }
+
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId || !sessions.has(sessionId)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -284,12 +422,8 @@ function wireApp(
 function createAuthenticatedMcpServer(
   config: ReturnType<typeof loadConfig>,
   extra?: Record<string, unknown>,
+  taskStore?: TaskStore,
 ) {
-  const server = new Server(
-    { name: config.name, version: config.version },
-    { capabilities: { tools: {} } },
-  );
-
   const clientId = extra?.starlinkClientId as string | undefined;
   const clientSecret = extra?.starlinkClientSecret as string | undefined;
   const accessToken = extra?.starlinkAccessToken as string | undefined;
@@ -298,16 +432,12 @@ function createAuthenticatedMcpServer(
   // re-mints its own Starlink token, so a ~15-min upstream token expiring
   // mid-session self-heals (re-mint on expiry and on 401). Fall back to a static
   // token, then to the operator-level config (stdio-style).
-  const clientConfig =
+  const starlink =
     clientId && clientSecret
       ? { apiUrl: config.starlink.apiUrl, tokenUrl: config.starlink.tokenUrl, clientId, clientSecret, timeout: config.starlink.timeout }
       : accessToken
         ? { apiUrl: config.starlink.apiUrl, tokenUrl: config.starlink.tokenUrl, accessToken, timeout: config.starlink.timeout }
         : config.starlink;
 
-  const client = new StarlinkClient(clientConfig);
-  registerTools(server, client);
-
-  server.onerror = (error) => logger.error('[MCP Error]', { error: String(error) });
-  return { server, client };
+  return createMcpServer({ ...config, starlink }, { taskStore });
 }

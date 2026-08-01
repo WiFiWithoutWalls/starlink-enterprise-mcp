@@ -20,8 +20,10 @@
 - 🤝 **Claude *and* ChatGPT support** — Public-client dynamic registration (`token_endpoint_auth_method=none`, PKCE only) means ChatGPT connects out of the box alongside confidential clients like Claude.
 - 🧬 **55 auto-generated tools from the spec** — The Starlink Enterprise v2 OpenAPI spec, regenerated on every build. Drop in a new spec and rebuild to pick up new endpoints.
 - 🎯 **No curated layer needed** — At 55 operations the full tool surface fits comfortably in a model's working memory, so every tool is exposed directly with read/write/destructive annotations.
+- ♾️ **Stateless by default** — No `Mcp-Session-Id`, no in-memory session map, no session affinity. Any instance can serve any request, so autoscaling and cold starts stop breaking mid-conversation.
+- 🧾 **Typed results** — Every tool declares an `outputSchema` derived from the OpenAPI response, and returns matching `structuredContent`. The model gets a typed object, not an opaque JSON blob.
 - 🪛 **Operator-tunable** — Disable globs (`MCP_DISABLED_TOOLS=delete_*,*reboot*`), a semantic destructive toggle (`MCP_DISABLE_DESTRUCTIVE=true`), branded login page (`MCP_LOGIN_HEADER`, `MCP_ICON_URL`). No code change for per-deployment policy.
-- 🧪 **A real test suite** — including a draft-2020-12 JSON Schema guard that compiles every tool's input schema on every run.
+- 🧪 **A real test suite** — 108 tests, including a draft-2020-12 JSON Schema guard that compiles every tool's input *and* output schema on every run, and end-to-end JSON-RPC over the actual transport.
 
 ## 🔑 How auth differs from a username/password MCP
 
@@ -141,7 +143,7 @@ Ships with a Cloud Run-friendly `Dockerfile` and `cloudbuild.yaml`.
 
 | Component | Purpose |
 |---|---|
-| Cloud Run service | Runs the HTTP server with session affinity and `min-instances=1` |
+| Cloud Run service | Runs the HTTP server. No session affinity or `min-instances` needed in the default stateless mode |
 | Firestore (native mode) | Persistent token store and DCR client registry |
 | Cloud Run SA → `roles/datastore.user` | Firestore access |
 
@@ -155,14 +157,31 @@ Required env vars on Cloud Run:
 |---|---|
 | `MCP_TRANSPORT=http` | enable the HTTP transport |
 | `MCP_BASE_URL` | public URL, e.g. `https://mcp.example.com` |
-| `MCP_SESSION_SECRET` | 32+ chars; signs cookies & must be stable across instances |
+| `MCP_SESSION_SECRET` | 32+ chars; signs login-state cookies & must be stable across instances |
 | `MCP_PERSISTENCE=firestore` | enable Firestore-backed tokens and clients |
 | `GOOGLE_CLOUD_PROJECT` | Firestore project ID (auto-set on Cloud Run) |
 
-Optional: `STARLINK_API_URL`, `STARLINK_TOKEN_URL` (defaults are correct for
-production), `MCP_LOGIN_HEADER`, `MCP_ICON_URL`, `MCP_LOGIN_LOGO_URL`,
+Transport and protocol options:
+
+| Var | Default | Notes |
+|---|---|---|
+| `MCP_STATELESS` | `true` | `false` restores `Mcp-Session-Id` sessions (single instance only) |
+| `MCP_JSON_RESPONSE` | `false` | Return plain JSON instead of SSE, for intermediaries that break event streams |
+| `MCP_ALLOWED_ORIGINS` | unset | Comma-separated allowlist; a non-matching `Origin` gets 403 |
+| `MCP_STRUCTURED_OUTPUT` | `true` | `false` drops `outputSchema` and `structuredContent` together |
+| `MCP_TOOLS_PAGE_SIZE` | `0` (one page) | Page size for `tools/list` cursor pagination |
+| `MCP_TASKS` | `false` | Enable task augmentation (see above) |
+| `MCP_TASKS_COLLECTION` | `mcp_tasks` | Firestore collection for task state |
+| `MCP_WEBSITE_URL` | Starlink API docs | `websiteUrl` advertised at initialize |
+
+Also optional: `STARLINK_API_URL`, `STARLINK_TOKEN_URL` (defaults are correct
+for production), `MCP_LOGIN_HEADER`, `MCP_ICON_URL`, `MCP_LOGIN_LOGO_URL`,
 `MCP_DISABLED_TOOLS`, `MCP_DISABLED_ACTIONS`, `MCP_DISABLE_DESTRUCTIVE`,
 `MCP_CORS_ORIGIN`.
+
+> `MCP_ICON_URL` now does double duty: it still serves the favicon and login-page
+> logo, and it is also advertised as the server's MCP `icons` entry so clients
+> can render it in a connector list.
 
 Other targets: `fly.toml` (Fly.io), `render.yaml` (Render), `railway.toml`
 (Railway), `docker-compose.yml`, and `k8s/` manifests (apply with
@@ -184,6 +203,78 @@ Other targets: `fly.toml` (Fly.io), `render.yaml` (Render), `railway.toml`
 6. AI exchanges the code at `/token` for the MCP-issued bearer + refresh token.
 7. On every `/mcp` request, the server verifies the bearer and transparently re-mints the upstream Starlink token if it's near expiry. On a `401` from the API, the client re-mints and retries once.
 
+## 📐 MCP spec conformance
+
+Targets **MCP 2025-11-25** and negotiates down to any revision the client asks
+for (2025-06-18, 2025-03-26, 2024-11-05).
+
+| Feature | Revision | Status |
+|---|---|---|
+| Streamable HTTP, **stateless** | 2025-03-26 | Default. `MCP_STATELESS=false` for sessions |
+| `MCP-Protocol-Version` header validation | 2025-06-18 | Unsupported version → 400 |
+| Structured output (`outputSchema` / `structuredContent`) | 2025-06-18 | 52 of 55 tools; `MCP_STRUCTURED_OUTPUT=false` to disable |
+| Tool `title` display names | 2025-06-18 | All tools |
+| OAuth Resource Server + protected-resource metadata | 2025-06-18 | RFC 9728 discovery, `WWW-Authenticate` |
+| No JSON-RPC batching | 2025-06-18 | Not accepted |
+| Icons on server and tools | 2025-11-25 (SEP-973) | From `MCP_ICON_URL` |
+| `Implementation.description`, `title`, `websiteUrl` | 2025-11-25 | Sent at initialize |
+| Invalid `Origin` → **403** | 2025-11-25 | Via `MCP_ALLOWED_ORIGINS` |
+| Validation errors as tool errors, not protocol errors | 2025-11-25 (SEP-1303) | Arguments validated, types coerced |
+| Tool-name format guidance | 2025-11-25 (SEP-986) | Validated at startup |
+| JSON Schema 2020-12 as default dialect | 2025-11-25 (SEP-1613) | Input and output schemas |
+| Tasks (durable requests, polling, deferred results) | 2025-11-25 (SEP-1686) | Opt-in via `MCP_TASKS=true` |
+| `tools/list` cursor pagination | 2024-11-05 | Opt-in via `MCP_TOOLS_PAGE_SIZE` |
+| `logging` capability + `logging/setLevel` | 2024-11-05 | Supported |
+
+Not implemented, and why: **resources** and **prompts** (this server exposes an
+API surface, not documents or templates), **completions** (nothing to complete
+without prompts or resource templates), **sampling**, **elicitation**, and
+**roots** (client-side features this server has no use for — every tool call is
+fully specified by its arguments).
+
+### Stateless vs. session mode
+
+Stateless is the default. Each request gets a fresh `Server` and transport, and
+no `Mcp-Session-Id` is issued.
+
+This matters on any autoscaled host. With sessions, `initialize` builds
+in-memory state on one instance, and the next `tools/call` gets load-balanced to
+an instance that has never heard of that session ID — the client sees
+`Invalid or missing session ID` and the conversation dies. Stateless has no
+affinity requirement, so `min-instances=1` and session affinity stop being
+load-bearing.
+
+Nothing is given up here: this server sends no server-initiated messages. The
+tool list is fixed at build time from the OpenAPI spec, and there are no
+resources or prompts to subscribe to, so the standalone `GET /mcp` SSE stream
+that sessions exist to support has nothing to carry. In stateless mode it
+answers `405` rather than opening a stream that can never produce anything.
+
+Set `MCP_STATELESS=false` on a single-instance deployment to restore sessions.
+
+### Tasks
+
+Off by default. A task-augmented `tools/call` returns a handle immediately and
+the client collects the result later via `tasks/result`, decoupling the tool's
+runtime from the HTTP request's lifetime.
+
+Enabling it on Cloud Run needs two things that are not the default:
+
+- **`--no-cpu-throttling`**, or the container is frozen once the response is
+  sent and the detached work never finishes.
+- **`MCP_PERSISTENCE=firestore`**, or the poll lands on an instance that has
+  never heard of the task. With Firestore the store is shared and any instance
+  can answer. Without it you get an in-memory store and a startup warning.
+
+```bash
+export MCP_TASKS=true
+export MCP_PERSISTENCE=firestore     # required for more than one instance
+```
+
+Task documents live in `mcp_tasks` (override with `MCP_TASKS_COLLECTION`) and
+carry an `expiresAt` field — set a Firestore TTL policy on it to have Firestore
+reclaim them. Client-requested TTLs are clamped to 24 hours.
+
 ## 🧰 Tools
 
 55 tools generated from `spec/starlink-enterprise-v2.json`, grouped by tag:
@@ -200,13 +291,41 @@ Other targets: `fly.toml` (Fly.io), `render.yaml` (Render), `railway.toml`
 | **Flights** | `post_flights_status` (aviation accounts) |
 | **Managed** | `post_managed_customers` (provider accounts) |
 
-Each tool is annotated `readOnlyHint` / `destructiveHint`. Reboots and deletes
-are flagged destructive — hide them all with `MCP_DISABLE_DESTRUCTIVE=true`, or
-selectively with e.g. `MCP_DISABLED_TOOLS=delete_*,*reboot*`.
+Each tool carries a human-readable `title`, an `inputSchema`, an `outputSchema`,
+and the full annotation set: `readOnlyHint`, `destructiveHint`, `idempotentHint`
+(GET/PUT/DELETE), and `openWorldHint`. Reboots and deletes are flagged
+destructive — hide them all with `MCP_DISABLE_DESTRUCTIVE=true`, or selectively
+with e.g. `MCP_DISABLED_TOOLS=delete_*,*reboot*`.
 
 Tool names map 1:1 to operations (`{method}_{path}`, with the `/public/v2`
 prefix stripped). Two deep service-line paths are abbreviated to fit the MCP
 64-character name limit.
+
+### Result shape
+
+Results carry `structuredContent` matching the tool's `outputSchema`, shaped
+like the Starlink response envelope — payload under `content`, plus `isValid`:
+
+```jsonc
+{
+  "content": [{ "type": "text", "text": "{ \"content\": { \"accountNumber\": \"ACC-…\" } }" }],
+  "structuredContent": { "content": { "accountNumber": "ACC-…", "regionCode": "US" }, "isValid": true }
+}
+```
+
+The schemas are deliberately permissive: no `required`, no
+`additionalProperties: false`, and `nullable` fields widened to a type union. A
+Starlink response that has drifted from the published spec still validates
+rather than being rejected by a strict client. If a client is still unhappy,
+`MCP_STRUCTURED_OUTPUT=false` drops both the schemas and the structured results
+in one move.
+
+**Errors come back in the result, not as protocol errors.** A permission
+failure, a bad argument, or an operator-disabled tool returns
+`isError: true` with an explanatory message, so the model can read what went
+wrong and retry. Only an unknown tool name is a JSON-RPC error. Arguments are
+validated against the input schema before any call is made, and obvious type
+mismatches (`"50"` for a number) are coerced rather than rejected.
 
 ## 🔄 Regenerating tools
 
@@ -232,8 +351,9 @@ The Firestore-backed tests are emulator-gated and skip cleanly without one.
 
 ## 📋 What this server is
 
-- **Two MCP transports.** `stdio` for local CLI integrations and `http` (Streamable HTTP) for hosted deployments. Production uses `http`.
-- **Auto-generated tools** from the Starlink Enterprise v2 OpenAPI spec, regenerated on every build.
+- **Two MCP transports.** `stdio` for local CLI integrations and `http` (Streamable HTTP, stateless by default) for hosted deployments. Production uses `http`.
+- **MCP 2025-11-25**, negotiating down to older revisions on request.
+- **Auto-generated tools** from the Starlink Enterprise v2 OpenAPI spec, regenerated on every build, with typed `structuredContent` results.
 - **Hosted OAuth login** where the login page collects Starlink Service Account credentials (Client ID + Secret), not a username/password. MFA does not apply to service accounts.
 - **Transparent token re-minting** via `client_credentials` (no refresh token).
 - **Firestore persistence** for tokens and DCR clients when `MCP_PERSISTENCE=firestore`.

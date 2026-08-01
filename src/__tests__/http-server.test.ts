@@ -12,7 +12,7 @@ beforeAll(async () => {
   process.env.MCP_BASE_URL = 'http://localhost:3000';
   delete process.env.GOOGLE_CLOUD_PROJECT;
   const { createApp } = await import('../http-server.js');
-  app = createApp().app;
+  app = (await createApp()).app;
 });
 
 describe('health check', () => {
