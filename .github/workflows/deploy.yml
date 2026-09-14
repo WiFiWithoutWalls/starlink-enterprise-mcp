@@ -9,11 +9,15 @@ permissions:
   contents: read
   id-token: write
 
-# One deploy at a time. Two concurrent builds would race to be the active
-# Cloud Run revision, and the loser silently wins if it finishes second.
+# One deploy at a time. Two concurrent rollouts race to be the active revision,
+# and the loser silently wins if it finishes second.
 concurrency:
   group: deploy-main
   cancel-in-progress: false
+
+env:
+  SERVICE: starlink-enterprise-mcp
+  REPO: cloud-run-source-deploy
 
 jobs:
   deploy:
@@ -21,9 +25,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 20, not the Dockerfile's 18: vitest's rolldown imports styleText from
+      # node:util, which does not exist before 20.12.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      # The suite gates the deploy. It also runs on PRs, but a push to main can
+      # carry a merge result no PR ever tested.
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npm test
+
       # Keyless: federates through the shared WIF pool in
-      # WiFiWithoutWalls/wifiwithoutwalls and impersonates a deploy SA whose
-      # only real power is submitting the build below.
+      # WiFiWithoutWalls/wifiwithoutwalls and impersonates the deploy SA.
       - id: auth
         uses: google-github-actions/auth@v2
         with:
@@ -32,51 +52,74 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      # cloudbuild.yaml is the single source of the build and deploy steps: it
-      # runs the suite, builds, pushes, and deploys to Cloud Run. Running it
-      # here rather than reimplementing those steps keeps one definition.
-      - name: Submit Cloud Build
-        run: |
-          gcloud builds submit \
-            --config cloudbuild.yaml \
-            --project "${{ vars.GCP_PROJECT }}" \
-            --substitutions "COMMIT_SHA=${GITHUB_SHA}"
+      - name: Configure docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
 
-      # A green build is not proof the new revision serves. Cloud Run can
-      # report a successful deploy while traffic still sits on the old
-      # revision, so assert the live service answers and is running THIS
-      # commit's image.
+      # Built here rather than through `gcloud builds submit`: that path stages a
+      # source tarball in the legacy gs://<project>_cloudbuild bucket and is
+      # refused under external-account credentials no matter which storage role
+      # the SA holds. Building in the runner removes the bucket from the path.
+      - name: Build and push
+        id: build
+        run: |
+          set -euo pipefail
+          image="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/${REPO}/${SERVICE}"
+          docker build -t "${image}:${GITHUB_SHA}" -t "${image}:latest" .
+          docker push "${image}:${GITHUB_SHA}"
+          docker push "${image}:latest"
+          # Deploy by digest: a tag can be moved, a digest cannot, so the
+          # verification below is asserting the exact artifact this run built.
+          digest=$(docker inspect --format='{{index .RepoDigests 0}}' "${image}:${GITHUB_SHA}")
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "built ${digest}"
+
+      - name: Deploy to Cloud Run
+        run: |
+          set -euo pipefail
+          gcloud run deploy "${SERVICE}" \
+            --image "${{ steps.build.outputs.digest }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --project "${{ vars.GCP_PROJECT }}" \
+            --platform managed \
+            --port 3000 \
+            --allow-unauthenticated \
+            --min-instances 1 \
+            --max-instances 10 \
+            --memory 512Mi \
+            --cpu 1 \
+            --timeout 3600 \
+            --quiet
+
+      # A green rollout is not proof the change is serving. Cloud Run can report
+      # success while traffic sits on the old revision, which is how this
+      # service ran a three-month-old image without anyone noticing.
       - name: Verify the deployed revision
         run: |
           set -euo pipefail
-          SERVICE=starlink-enterprise-mcp
-          REGION="${{ vars.GCP_REGION }}"
-          image=$(gcloud run services describe "$SERVICE" \
-            --region "$REGION" --project "${{ vars.GCP_PROJECT }}" \
+          serving=$(gcloud run services describe "${SERVICE}" \
+            --region "${{ vars.GCP_REGION }}" --project "${{ vars.GCP_PROJECT }}" \
             --format 'value(spec.template.spec.containers[0].image)')
-          echo "serving image: $image"
-          case "$image" in
-            *":${GITHUB_SHA}") echo "revision is this commit" ;;
-            *) echo "::error::live image $image is not ${GITHUB_SHA}"; exit 1 ;;
-          esac
+          echo "serving: ${serving}"
+          test "${serving}" = "${{ steps.build.outputs.digest }}"
 
-          # An unauthenticated /mcp must answer 401 with a resource_metadata
-          # pointer. A 5xx or a connection failure means the revision is up
-          # but not serving.
           base="${{ vars.MCP_BASE_URL }}"
-          code=$(curl -sS -o /tmp/body -w '%{http_code}' -m 30 \
-            -X POST "$base/mcp" \
+
+          # An unauthenticated /mcp must answer 401, not a 5xx or a refused
+          # connection: that distinguishes "up and gating" from "up and broken".
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -m 30 \
+            -X POST "${base}/mcp" \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
-          echo "unauthenticated /mcp -> $code"
-          test "$code" = "401"
+          echo "unauthenticated /mcp -> ${code}"
+          test "${code}" = "401"
 
           # Pass-through must not advertise dynamic registration: a client that
-          # takes it would register a client_id that can never authenticate.
-          meta=$(curl -sS -m 30 "$base/.well-known/oauth-authorization-server")
-          if echo "$meta" | grep -q registration_endpoint; then
-            echo "::error::registration_endpoint is advertised in pass-through mode"
+          # takes it registers a client_id that can never authenticate upstream.
+          meta=$(curl -sS -m 30 "${base}/.well-known/oauth-authorization-server")
+          if grep -q registration_endpoint <<<"${meta}"; then
+            echo "::error::registration_endpoint advertised in pass-through mode"
             exit 1
           fi
+
           echo "deploy verified"
