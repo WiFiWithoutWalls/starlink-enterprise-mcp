@@ -139,7 +139,7 @@ export STARLINK_CLIENT_SECRET=<service-account-secret>
 
 ## ☁️ Cloud Run deployment
 
-Ships with a Cloud Run-friendly `Dockerfile` and `cloudbuild.yaml`.
+Ships with a Cloud Run-friendly `Dockerfile`.
 
 | Component | Purpose |
 |---|---|
@@ -147,8 +147,25 @@ Ships with a Cloud Run-friendly `Dockerfile` and `cloudbuild.yaml`.
 | Firestore (native mode) | Persistent token store and DCR client registry |
 | Cloud Run SA → `roles/datastore.user` | Firestore access |
 
+Pushes to `main` deploy through `.github/workflows/deploy.yml`, which runs the
+suite, builds the image in the runner, pushes it to Artifact Registry, and
+deploys it by digest. It then asserts the live revision is that digest, that an
+unauthenticated `/mcp` answers 401, and that pass-through advertises no
+`registration_endpoint`.
+
+It does not use `gcloud builds submit`. That path stages a source tarball in the
+legacy `gs://<project>_cloudbuild` bucket and is refused under the external
+account credentials GitHub Actions federates with, whatever storage role the
+deploy identity holds.
+
+To deploy by hand from a checkout instead:
+
 ```bash
-gcloud builds submit --config cloudbuild.yaml --project=<your-project>
+image=<region>-docker.pkg.dev/<project>/cloud-run-source-deploy/starlink-enterprise-mcp
+docker build -t "$image:$(git rev-parse HEAD)" .
+docker push "$image:$(git rev-parse HEAD)"
+gcloud run deploy starlink-enterprise-mcp --image "$image:$(git rev-parse HEAD)" \
+  --region=<region> --project=<project> --port=3000
 ```
 
 Required env vars on Cloud Run:

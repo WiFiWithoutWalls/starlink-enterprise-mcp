@@ -20,7 +20,7 @@ jobs:
 
       # 20, not the Dockerfile's 18: vitest's rolldown imports styleText from
       # node:util, which does not exist before 20.12. Kept in step with the
-      # cloudbuild test step so both gates run the same toolchain.
+      # deploy workflow so both gates run the same toolchain.
       - uses: actions/setup-node@v4
         with:
           node-version: '20'

@@ -8,7 +8,6 @@ tmp/
 # Config
 tsconfig.json
 vitest.config.ts
-cloudbuild.yaml
 docker-compose.yml
 Dockerfile
 .dockerignore
