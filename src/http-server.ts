@@ -18,7 +18,11 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import {
+  isInitializeRequest,
+  SUPPORTED_PROTOCOL_VERSIONS,
+  LATEST_PROTOCOL_VERSION,
+} from '@modelcontextprotocol/sdk/types.js';
 import type { TaskStore } from '@modelcontextprotocol/sdk/experimental/index.js';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
@@ -51,6 +55,52 @@ interface AuthenticatedRequest extends IncomingMessage {
  * has nothing to carry. Set MCP_STATELESS=false for the session-based
  * transport on a single-instance deployment.
  */
+/**
+ * Decode an HTTP Basic `Authorization` header into its credential pair.
+ *
+ * The OAuth metadata advertises `client_secret_post`, but some MCP clients
+ * present `client_secret_basic` regardless. Returns undefined for any header
+ * that is absent, a different scheme, or not decodable.
+ */
+export function parseBasicAuth(header?: string): { clientId: string; clientSecret: string } | undefined {
+  if (!header?.toLowerCase().startsWith('basic ')) return undefined;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(header.slice(6).trim(), 'base64').toString('utf8');
+  } catch {
+    return undefined;
+  }
+  const sep = decoded.indexOf(':');
+  if (sep < 0) return undefined;
+  // RFC 6749 §2.3.1 form-encodes both halves before base64.
+  const decode = (s: string) => {
+    try {
+      return decodeURIComponent(s);
+    } catch {
+      return s;
+    }
+  };
+  const clientId = decode(decoded.slice(0, sep));
+  const clientSecret = decode(decoded.slice(sep + 1));
+  if (!clientId || !clientSecret) return undefined;
+  return { clientId, clientSecret };
+}
+
+/**
+ * Pick the protocol version to hand the transport for a request.
+ *
+ * The SDK rejects any `MCP-Protocol-Version` it does not know with a 400, so a
+ * client negotiating a revision newer than this build refuses to connect at
+ * all. A newer date means the client can speak everything we can, so we clamp
+ * it to our latest and let normal negotiation apply. Unknown *older* values
+ * are left alone so they still fail loudly.
+ */
+export function negotiateProtocolVersion(requested?: string): string | undefined {
+  if (!requested) return undefined;
+  if ((SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(requested)) return requested;
+  return requested > LATEST_PROTOCOL_VERSION ? LATEST_PROTOCOL_VERSION : requested;
+}
+
 export function statelessEnabled(): boolean {
   return process.env.MCP_STATELESS !== 'false';
 }
@@ -254,7 +304,15 @@ function wireApp(
       next();
     });
     app.post('/token', (req, _res, next) => {
-      const body = (req as any).body || {};
+      const body = ((req as any).body ||= {});
+      // Some clients send credentials as HTTP Basic even though the metadata
+      // advertises client_secret_post only. Fold them into the body so both
+      // the SDK's clientAuth and the capture below see them.
+      const basic = parseBasicAuth(req.headers.authorization);
+      if (basic) {
+        if (!body.client_id) body.client_id = basic.clientId;
+        if (!body.client_secret) body.client_secret = basic.clientSecret;
+      }
       if (body.code && body.client_secret) {
         authProvider.captureTokenSecret(String(body.code), String(body.client_secret));
       }
@@ -323,6 +381,20 @@ function wireApp(
     await server.connect(transport);
     await transport.handleRequest(req, res, (req as any).body);
   };
+
+  // Clamp a future protocol revision to the newest one this build supports.
+  // Must run before the transport, which 400s on an unrecognised value.
+  app.use('/mcp', (req, _res, next) => {
+    const requested = req.headers['mcp-protocol-version'];
+    if (typeof requested === 'string') {
+      const negotiated = negotiateProtocolVersion(requested);
+      if (negotiated && negotiated !== requested) {
+        logger.debug('Clamped MCP-Protocol-Version', { requested, negotiated });
+        req.headers['mcp-protocol-version'] = negotiated;
+      }
+    }
+    next();
+  });
 
   app.post('/mcp', bearerAuth, async (req: AuthenticatedRequest, res: ServerResponse) => {
     if (stateless) {
