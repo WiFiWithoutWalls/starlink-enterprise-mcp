@@ -15,7 +15,9 @@
 
 steps:
   - id: test
-    name: 'node:18-alpine'
+    # 20, not 18: vitest's rolldown imports styleText from node:util, which
+    # does not exist before 20.12, so the suite cannot start on 18.
+    name: 'node:20-alpine'
     entrypoint: sh
     args:
       - -c
@@ -66,7 +68,10 @@ steps:
 
 substitutions:
   _REGION: us-central1
-  _REPO: starlink-enterprise-mcp
+  # Artifact Registry repo that actually exists in this project and already
+  # holds the running image. A repo named starlink-enterprise-mcp was never
+  # created, so the push step could not have succeeded.
+  _REPO: cloud-run-source-deploy
 
 images:
   - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/starlink-enterprise-mcp:$COMMIT_SHA'

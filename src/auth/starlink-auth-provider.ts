@@ -202,17 +202,12 @@ class DynamicClientsStore implements OAuthRegisteredClientsStore {
     this.clients.set(clientId, this.synth(clientId, [...uris]));
   }
 
-  registerClient(
-    client: Omit<OAuthClientInformationFull, 'client_id' | 'client_id_issued_at'>,
-  ): OAuthClientInformationFull {
-    const full = {
-      ...client,
-      client_id: randomUUID(),
-      client_id_issued_at: Math.floor(Date.now() / 1000),
-    } as OAuthClientInformationFull;
-    this.clients.set(full.client_id, full);
-    return full;
-  }
+  // Deliberately no registerClient. The SDK derives both the advertised
+  // `registration_endpoint` and the /register route from its presence
+  // (server/auth/router.js), and dynamic registration cannot work here: a
+  // self-registered client_id is not a Starlink service account, so its token
+  // exchange always fails with "Invalid Starlink service account credentials".
+  // Omitting it makes clients fall back to the configured credentials.
 }
 
 // ---------------------------------------------------------------------------
