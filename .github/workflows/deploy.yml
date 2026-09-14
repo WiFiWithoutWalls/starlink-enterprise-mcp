@@ -1,0 +1,82 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+# One deploy at a time. Two concurrent builds would race to be the active
+# Cloud Run revision, and the loser silently wins if it finishes second.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keyless: federates through the shared WIF pool in
+      # WiFiWithoutWalls/wifiwithoutwalls and impersonates a deploy SA whose
+      # only real power is submitting the build below.
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # cloudbuild.yaml is the single source of the build and deploy steps: it
+      # runs the suite, builds, pushes, and deploys to Cloud Run. Running it
+      # here rather than reimplementing those steps keeps one definition.
+      - name: Submit Cloud Build
+        run: |
+          gcloud builds submit \
+            --config cloudbuild.yaml \
+            --project "${{ vars.GCP_PROJECT }}" \
+            --substitutions "COMMIT_SHA=${GITHUB_SHA}"
+
+      # A green build is not proof the new revision serves. Cloud Run can
+      # report a successful deploy while traffic still sits on the old
+      # revision, so assert the live service answers and is running THIS
+      # commit's image.
+      - name: Verify the deployed revision
+        run: |
+          set -euo pipefail
+          SERVICE=starlink-enterprise-mcp
+          REGION="${{ vars.GCP_REGION }}"
+          image=$(gcloud run services describe "$SERVICE" \
+            --region "$REGION" --project "${{ vars.GCP_PROJECT }}" \
+            --format 'value(spec.template.spec.containers[0].image)')
+          echo "serving image: $image"
+          case "$image" in
+            *":${GITHUB_SHA}") echo "revision is this commit" ;;
+            *) echo "::error::live image $image is not ${GITHUB_SHA}"; exit 1 ;;
+          esac
+
+          # An unauthenticated /mcp must answer 401 with a resource_metadata
+          # pointer. A 5xx or a connection failure means the revision is up
+          # but not serving.
+          base="${{ vars.MCP_BASE_URL }}"
+          code=$(curl -sS -o /tmp/body -w '%{http_code}' -m 30 \
+            -X POST "$base/mcp" \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
+          echo "unauthenticated /mcp -> $code"
+          test "$code" = "401"
+
+          # Pass-through must not advertise dynamic registration: a client that
+          # takes it would register a client_id that can never authenticate.
+          meta=$(curl -sS -m 30 "$base/.well-known/oauth-authorization-server")
+          if echo "$meta" | grep -q registration_endpoint; then
+            echo "::error::registration_endpoint is advertised in pass-through mode"
+            exit 1
+          fi
+          echo "deploy verified"
