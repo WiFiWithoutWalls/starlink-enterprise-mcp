@@ -15,7 +15,9 @@
 
 steps:
   - id: test
-    name: 'node:18-alpine'
+    # 20, not 18: vitest's rolldown imports styleText from node:util, which
+    # does not exist before 20.12, so the suite cannot start on 18.
+    name: 'node:20-alpine'
     entrypoint: sh
     args:
       - -c

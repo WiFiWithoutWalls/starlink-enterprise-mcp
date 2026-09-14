@@ -18,11 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 18 matches the Dockerfile and the cloudbuild test step, so green here
-      # means green on the runtime that actually ships.
+      # 20, not the Dockerfile's 18: vitest's rolldown imports styleText from
+      # node:util, which does not exist before 20.12. Kept in step with the
+      # cloudbuild test step so both gates run the same toolchain.
       - uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
           cache: npm
 
       - run: npm ci
