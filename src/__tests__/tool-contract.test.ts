@@ -24,7 +24,7 @@ function clientReturning(data: unknown): StarlinkClient {
   const apiRequest = vi.fn().mockResolvedValue({ data });
   vi.mocked(axios.create).mockReturnValue({ request: apiRequest } as unknown as AxiosInstance);
   return new StarlinkClient({
-    apiUrl: 'https://web-api.starlink.com',
+    apiUrl: 'https://www.starlink.com/api',
     tokenUrl: 'https://www.starlink.com/api/auth/connect/token',
     accessToken: 'tok',
   });
@@ -34,7 +34,7 @@ function clientFailing(status: number, body: unknown): StarlinkClient {
   const apiRequest = vi.fn().mockRejectedValue({ response: { status, data: body } });
   vi.mocked(axios.create).mockReturnValue({ request: apiRequest } as unknown as AxiosInstance);
   return new StarlinkClient({
-    apiUrl: 'https://web-api.starlink.com',
+    apiUrl: 'https://www.starlink.com/api',
     tokenUrl: 'https://www.starlink.com/api/auth/connect/token',
     accessToken: 'tok',
   });
@@ -188,7 +188,7 @@ describe('tool execution errors', () => {
     const apiRequest = vi.fn();
     vi.mocked(axios.create).mockReturnValue({ request: apiRequest } as unknown as AxiosInstance);
     const client = new StarlinkClient({
-      apiUrl: 'https://web-api.starlink.com',
+      apiUrl: 'https://www.starlink.com/api',
       tokenUrl: 'https://www.starlink.com/api/auth/connect/token',
       accessToken: 'tok',
     });

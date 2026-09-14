@@ -46,7 +46,7 @@ AI client (Claude/ChatGPT)
 [ Starlink MCP HTTP server (this repo) ]   ← OAuth proxy, login page (Client ID + Secret), cookies, Firestore
   │  per-account Starlink bearer (client_credentials)
   ▼
-[ Starlink Enterprise API  https://web-api.starlink.com ]
+[ Starlink Enterprise API  https://www.starlink.com/api ]
 ```
 
 Each issued MCP bearer maps to a stored upstream Starlink token **plus** the
@@ -330,7 +330,10 @@ mismatches (`"50"` for a number) are coerced rather than rejected.
 ## 🔄 Regenerating tools
 
 The spec lives at `spec/starlink-enterprise-v2.json` (sourced from
-`https://web-api.starlink.com/enterprise/swagger/v2/swagger.json`). To refresh:
+`https://web-api.starlink.com/enterprise/swagger/v2/swagger.json`). That host
+now serves Starlink's consumer web app and no longer carries this path, and
+the new spec location is not known. Do not guess a replacement URL. To refresh
+once a real source turns up:
 
 ```bash
 # drop a new spec into spec/starlink-enterprise-v2.json, then:

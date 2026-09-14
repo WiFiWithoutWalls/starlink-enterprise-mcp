@@ -87,6 +87,20 @@ export function parseBasicAuth(header?: string): { clientId: string; clientSecre
 }
 
 /**
+ * Overwrite a header's value in Node's `rawHeaders` array, case-insensitively.
+ *
+ * `rawHeaders` is a flat [name, value, name, value, ...] list and is what
+ * @hono/node-server reads when it builds the Web Request the MCP transport
+ * actually inspects. Mutating `req.headers` does not affect it.
+ */
+export function rewriteRawHeader(rawHeaders: string[] | undefined, name: string, value: string): void {
+  if (!Array.isArray(rawHeaders)) return;
+  for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
+    if (rawHeaders[i]?.toLowerCase() === name) rawHeaders[i + 1] = value;
+  }
+}
+
+/**
  * Pick the protocol version to hand the transport for a request.
  *
  * The SDK rejects any `MCP-Protocol-Version` it does not know with a 400, so a
@@ -391,6 +405,10 @@ function wireApp(
       if (negotiated && negotiated !== requested) {
         logger.debug('Clamped MCP-Protocol-Version', { requested, negotiated });
         req.headers['mcp-protocol-version'] = negotiated;
+        // The transport rebuilds a Web Request from rawHeaders via
+        // @hono/node-server, so req.headers alone is never read. Rewrite both
+        // or the clamp silently does nothing.
+        rewriteRawHeader(req.rawHeaders, 'mcp-protocol-version', negotiated);
       }
     }
     next();

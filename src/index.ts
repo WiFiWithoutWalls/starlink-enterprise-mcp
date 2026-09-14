@@ -20,7 +20,11 @@ import { DEFAULT_TOKEN_URL } from './auth/starlink-token-manager.js';
 import { buildImplementation, serverInstructions } from './server-metadata.js';
 import { createTaskStore, tasksCapability } from './tasks/index.js';
 
-export const DEFAULT_API_URL = 'https://web-api.starlink.com';
+// web-api.starlink.com now serves Starlink's consumer web app (an HTML shell,
+// HTTP 200 on every path) and is no longer the management API. Verified live
+// against this account: /public/v2/account returns a 34KB HTML document there
+// and real JSON on www.starlink.com/api, which is also the token origin.
+export const DEFAULT_API_URL = 'https://www.starlink.com/api';
 
 export const loadConfig = (): MCPServerConfig => {
   const apiUrl = process.env.STARLINK_API_URL || DEFAULT_API_URL;

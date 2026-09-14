@@ -4,7 +4,7 @@ metadata:
   name: starlink-mcp
   namespace: starlink-mcp
 data:
-  STARLINK_API_URL: "https://web-api.starlink.com"
+  STARLINK_API_URL: "https://www.starlink.com/api"
   STARLINK_TOKEN_URL: "https://www.starlink.com/api/auth/connect/token"
   MCP_TRANSPORT: "http"
   MCP_PORT: "3000"
