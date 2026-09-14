@@ -9,7 +9,7 @@ services:
       - "${MCP_PORT:-3000}:3000"
     environment:
       # Starlink API endpoints (defaults are correct for production)
-      - STARLINK_API_URL=${STARLINK_API_URL:-https://web-api.starlink.com}
+      - STARLINK_API_URL=${STARLINK_API_URL:-https://www.starlink.com/api}
       - STARLINK_TOKEN_URL=${STARLINK_TOKEN_URL:-https://www.starlink.com/api/auth/connect/token}
 
       # Transport configuration

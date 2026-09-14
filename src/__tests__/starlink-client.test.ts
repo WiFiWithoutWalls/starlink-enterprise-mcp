@@ -5,7 +5,7 @@ import { StarlinkClient } from '../starlink-client.js';
 
 vi.mock('axios');
 
-const API_URL = 'https://web-api.starlink.com';
+const API_URL = 'https://www.starlink.com/api';
 const TOKEN_URL = 'https://www.starlink.com/api/auth/connect/token';
 
 function createMockAxios() {
@@ -102,4 +102,49 @@ describe('StarlinkClient', () => {
     expect(res.error).toContain('404');
     expect(res.error).toContain('not found');
   });
+
+  it('fails loudly when the API base serves an HTML page instead of JSON', async () => {
+    const { request } = createMockAxios();
+    // What web-api.starlink.com actually does: HTTP 200, HTML, on every path.
+    request.mockResolvedValue({
+      data: '<!DOCTYPE html><html lang="en"><body>consumer app</body></html>',
+      headers: { 'content-type': 'text/html; charset=utf-8' },
+    });
+
+    const client = new StarlinkClient({ apiUrl: API_URL, tokenUrl: TOKEN_URL, accessToken: 'tok' });
+    const res = await client.request({ method: 'GET', pathTemplate: '/public/v2/account' });
+
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('HTML page rather than JSON');
+    expect(res.error).toContain(API_URL);
+  });
+
+  it('detects an HTML body even when the content-type is unset', async () => {
+    const { request } = createMockAxios();
+    request.mockResolvedValue({ data: '<html><body>nope</body></html>', headers: {} });
+
+    const client = new StarlinkClient({ apiUrl: API_URL, tokenUrl: TOKEN_URL, accessToken: 'tok' });
+    const res = await client.request({ method: 'GET', pathTemplate: '/public/v2/account' });
+
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('HTML page rather than JSON');
+  });
+
+  it('passes through a JSON response and a plain string payload', async () => {
+    const { request } = createMockAxios();
+    request.mockResolvedValue({
+      data: { content: { accountName: 'Acme' } },
+      headers: { 'content-type': 'application/json' },
+    });
+
+    const client = new StarlinkClient({ apiUrl: API_URL, tokenUrl: TOKEN_URL, accessToken: 'tok' });
+    const json = await client.request({ method: 'GET', pathTemplate: '/public/v2/account' });
+    expect(json.success).toBe(true);
+
+    // A non-HTML string body (e.g. the columnar telemetry stream) is not an error.
+    request.mockResolvedValue({ data: 'col1,col2\n1,2', headers: { 'content-type': 'text/plain' } });
+    const text = await client.request({ method: 'GET', pathTemplate: '/public/v2/telemetry' });
+    expect(text.success).toBe(true);
+  });
+
 });

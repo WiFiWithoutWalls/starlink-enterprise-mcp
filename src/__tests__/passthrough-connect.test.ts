@@ -16,7 +16,7 @@ import axios from 'axios';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Express } from 'express';
 import { SUPPORTED_PROTOCOL_VERSIONS, LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
-import { createApp, parseBasicAuth, negotiateProtocolVersion } from '../http-server.js';
+import { createApp, parseBasicAuth, negotiateProtocolVersion, rewriteRawHeader } from '../http-server.js';
 
 vi.mock('axios');
 
@@ -231,5 +231,69 @@ describe('negotiateProtocolVersion', () => {
 
   it('returns undefined when no version was requested', () => {
     expect(negotiateProtocolVersion(undefined)).toBeUndefined();
+  });
+});
+
+describe('a future protocol revision reaches the transport clamped', () => {
+  const FUTURE = '2026-07-28';
+
+  async function bearer(): Promise<string> {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: { access_token: 'starlink-bearer', expires_in: 3600, token_type: 'Bearer' },
+    } as never);
+    const { verifier, challenge } = pkce();
+    const code = await getCode(passthroughApp, SA_ID, challenge);
+    const res = await request(passthroughApp).post('/token').type('form').send({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: REDIRECT,
+      code_verifier: verifier,
+      client_id: SA_ID,
+      client_secret: SA_SECRET,
+    });
+    expect(res.status).toBe(200);
+    return res.body.access_token as string;
+  }
+
+  it('serves tools/list instead of 400ing on the version', async () => {
+    const token = await bearer();
+    const res = await request(passthroughApp)
+      .post('/mcp')
+      .set('Authorization', `Bearer ${token}`)
+      .set('MCP-Protocol-Version', FUTURE)
+      .set('Accept', 'application/json, text/event-stream')
+      .send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+
+    expect(res.status).toBe(200);
+    expect(res.text).not.toContain('Unsupported protocol version');
+    expect(res.text).toContain('inputSchema');
+  });
+
+  it('still refuses an unknown older revision', async () => {
+    const token = await bearer();
+    const res = await request(passthroughApp)
+      .post('/mcp')
+      .set('Authorization', `Bearer ${token}`)
+      .set('MCP-Protocol-Version', '2023-01-01')
+      .set('Accept', 'application/json, text/event-stream')
+      .send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+
+    expect(res.status).toBe(400);
+    expect(res.text).toContain('Unsupported protocol version');
+  });
+});
+
+describe('rewriteRawHeader', () => {
+  it('replaces the value for a header regardless of its case', () => {
+    const raw = ['Host', 'x', 'MCP-Protocol-Version', '2026-07-28'];
+    rewriteRawHeader(raw, 'mcp-protocol-version', '2025-11-25');
+    expect(raw).toEqual(['Host', 'x', 'MCP-Protocol-Version', '2025-11-25']);
+  });
+
+  it('leaves other headers and a missing header alone', () => {
+    const raw = ['Host', 'x'];
+    rewriteRawHeader(raw, 'mcp-protocol-version', '2025-11-25');
+    expect(raw).toEqual(['Host', 'x']);
+    expect(() => rewriteRawHeader(undefined, 'a', 'b')).not.toThrow();
   });
 });

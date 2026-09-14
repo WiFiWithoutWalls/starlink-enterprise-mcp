@@ -101,6 +101,8 @@ export class StarlinkClient {
 
     try {
       const response = await send();
+      const wrong = wrongHostError(response, this.config.apiUrl);
+      if (wrong) return { success: false, error: wrong };
       return { success: true, data: response.data as T };
     } catch (error: any) {
       // Token expired/invalid — re-mint once and retry (only when we own the token).
@@ -109,6 +111,8 @@ export class StarlinkClient {
         this.tokenManager.clear();
         try {
           const retry = await send();
+          const retryWrong = wrongHostError(retry, this.config.apiUrl);
+          if (retryWrong) return { success: false, error: retryWrong };
           return { success: true, data: retry.data as T };
         } catch (retryErr: any) {
           return { success: false, error: formatError(retryErr) };
@@ -117,6 +121,26 @@ export class StarlinkClient {
       return { success: false, error: formatError(error) };
     }
   }
+}
+
+/**
+ * Catch an API base URL that answers with a web page instead of the API.
+ *
+ * web-api.starlink.com answers HTTP 200 with a ~34KB HTML shell on every path,
+ * including /public/v2/account. Without this check that document is returned as
+ * a successful tool result and handed to the model as though it were data, so a
+ * misconfigured base URL looks like a working server returning nonsense.
+ */
+function wrongHostError(response: AxiosResponse, apiUrl: string): string | undefined {
+  const contentType = String(response.headers?.['content-type'] ?? '');
+  if (contentType.includes('json')) return undefined;
+  const looksLikeHtml =
+    contentType.includes('html') || (typeof response.data === 'string' && /^\s*<(!doctype|html)/i.test(response.data));
+  if (!looksLikeHtml) return undefined;
+  return (
+    `${apiUrl} returned an HTML page rather than JSON (content-type: ${contentType || 'unset'}). ` +
+    'This base URL is serving a web app, not the Starlink management API. Set STARLINK_API_URL to the API host.'
+  );
 }
 
 function formatError(error: any): string {

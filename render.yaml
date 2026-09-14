@@ -11,7 +11,7 @@ services:
       - key: MCP_SESSION_SECRET
         sync: false
       - key: STARLINK_API_URL
-        value: https://web-api.starlink.com
+        value: https://www.starlink.com/api
       - key: STARLINK_TOKEN_URL
         value: https://www.starlink.com/api/auth/connect/token
       - key: MCP_TRANSPORT
